@@ -172,13 +172,6 @@
     #titlebar-drag { flex: 1; height: 100%; min-width: 20px; }
 
     /* Thin vertical divider between top-bar clusters */
-    .tb-sep {
-      width: 1px; height: 20px;
-      background: var(--border);
-      margin: 0 4px;
-      flex-shrink: 0;
-    }
-
     #titlebar-menu {
       display: flex;
       align-items: center;
@@ -929,8 +922,6 @@
        (#adv-shape-opts, sidebar) — see [[advanced-properties-redesign]]. */
     #ann-shape-opts { display: none; align-items: center; }
     .shape-row { display: flex; align-items: center; gap: 7px; }
-    .shape-sep { width: 1px; height: 20px; background: var(--border-strong); flex-shrink: 0; }
-    .shape-row-label { font-size: 11px; color: var(--text-3); font-weight: 500; white-space: nowrap; }
     /* Arrow options (Basic Properties): just the compact Color Palette. Full
        stroke-colour control + the tail-text toggle live in Advanced
        Properties (#adv-arrow-opts, sidebar). */
@@ -946,50 +937,6 @@
        Palette — Width/Opacity/Smoothness live in Advanced Properties now,
        styled via .control/.control-val there instead of bespoke rules here. */
     #ann-draw-opts { display: none; align-items: center; gap: 12px; }
-
-    /* Small toggle switch (Fill / Outline enable) — same switch language, smaller */
-    .mini-toggle { display: flex; align-items: center; cursor: pointer; }
-    .mini-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-    .mini-toggle-track {
-      position: relative;
-      width: 26px; height: 15px;
-      border-radius: 8px;
-      background: var(--surface-3);
-      border: 1px solid var(--border-strong);
-      transition: background 0.15s, border-color 0.15s;
-      flex-shrink: 0;
-    }
-    .mini-toggle-thumb {
-      position: absolute; top: 1px; left: 1px;
-      width: 11px; height: 11px;
-      border-radius: 50%;
-      background: var(--text-3);
-      transition: transform 0.15s, background 0.15s;
-    }
-    .mini-toggle input:checked + .mini-toggle-track { background: var(--accent); border-color: var(--accent); }
-    .mini-toggle input:checked + .mini-toggle-track .mini-toggle-thumb { transform: translateX(11px); background: var(--on-accent); }
-
-    /* Fill / outline colour swatch button — opens the colour-picker popover.
-       The inner checkerboard shows through whenever the colour has partial alpha. */
-    .color-swatch-btn {
-      width: 22px; height: 22px;
-      border-radius: 6px;
-      border: 1px solid var(--border-strong);
-      padding: 2px;
-      background: var(--surface-3);
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .color-swatch-btn:hover { border-color: var(--accent); }
-    .color-swatch-inner {
-      display: block;
-      width: 100%; height: 100%;
-      border-radius: 4px;
-      background-image:
-        linear-gradient(var(--swatch-color, transparent), var(--swatch-color, transparent)),
-        repeating-conic-gradient(#999 0% 25%, #ddd 0% 50%);
-      background-size: 100% 100%, 8px 8px;
-    }
 
     /* ─── Colour-picker popover (reused by the Fill / Outline swatches) ──────── */
     #color-picker-popover {
@@ -1106,8 +1053,7 @@
     .cp-slider input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; }
 
     .cp-hex-row { display: flex; align-items: center; gap: 8px; }
-    /* Same frame recipe as .color-swatch-btn/.color-swatch-inner elsewhere: a
-       2px surface-coloured gap between the border and the fill. Without it, the
+    /* A 2px surface-coloured gap between the border and the fill. Without it, the
        fill sits flush against the border-radius clip and a hairline of the
        checkerboard/fill bleeds through at the rounded corners — the "cropped/
        transparent" look flagged 2026-07-06. */
@@ -1813,7 +1759,6 @@
       transition: border-color 0.12s;
     }
     .hist-sb-item:hover { border-color: var(--accent); }
-    .hist-sb-item.drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-tint); }
     .hist-sb-item img { display: block; width: 100%; aspect-ratio: 4/3; object-fit: cover; }
     .hist-sb-item-info {
       padding: 5px 7px 6px;
@@ -1903,7 +1848,7 @@
 
     /* Advanced Properties (sidebar) — always the first #controls section; body
        swaps per active tool. Follows the sidebar's own spacing-driven hierarchy
-       (no dividers) rather than the toolbar panel's shape-sep convention. */
+       (no dividers) rather than the toolbar panel's separator convention. */
     #adv-props-body > .adv-tool-opts { display: none; flex-direction: column; gap: 14px; }
     /* Every .adv-tool-opts (and its nested flex+gap sub-groups) supplies its
        own vertical rhythm via gap — .control's own margin-bottom (18px, for
@@ -2143,7 +2088,6 @@
     :root.dark .custom-image-btn { background: #121718; border-color: #2C2C31; }
     :root.light .custom-image-btn { border-color: #E1E1E3; }
     .custom-image-btn:hover { color: var(--text); }
-    .custom-image-btn.has-image .custom-image-icon { display: none; }
     .custom-image-btn.selected {
       background: var(--accent-tint);
       border-color: transparent;
@@ -2325,13 +2269,6 @@
     .switch input:checked + .slider-track { background: var(--accent); }
     .switch input:checked + .slider-track::before { transform: translateX(14px); background: var(--on-accent); }
 
-    /* Muted one-line explainer under a section toggle (e.g. Balance). The bottom
-       margin matches the .control rhythm so following controls keep their gap. */
-    .section-hint {
-      font-size: 11px; color: var(--text-3); line-height: 1.5;
-      margin: 7px 0 18px;
-    }
-    .section-hint:last-child { margin-bottom: 0; }
 
     /* ─── Smart redact (sidebar) ────────────────────────────────────────────── */
     /* Header: uppercase section title + live "(found N)" count + a +/− disclosure
@@ -2574,7 +2511,6 @@
     .sp-body::-webkit-scrollbar { width: 6px; }
     .sp-body::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
 
-    .sp-divider { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
 
     .sp-btn {
       background: var(--surface-2);

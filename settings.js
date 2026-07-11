@@ -75,4 +75,4 @@ function setSetting(key, value) {
   return getSettings();
 }
 
-module.exports = { getSettings, setSetting, DEFAULT_HOTKEY, DEFAULT_AI_HOTKEY };
+module.exports = { getSettings, setSetting };

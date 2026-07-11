@@ -2206,7 +2206,6 @@ function isDrawingTool(t) {
   return t === 'arrow' || t === 'line' || t === 'rect' || t === 'ellipse'
       || t === 'blur'  || t === 'highlight';
 }
-function isShapeTool(t)   { return t === 'rect' || t === 'ellipse'; }
 // The three primitives folded into the single "Shape" toolbar button.
 function isShapeGroupTool(t) { return t === 'line' || t === 'rect' || t === 'ellipse'; }
 function isAnnTool(t)     { return isDrawingTool(t) || t === 'text' || t === 'counter' || t === 'draw'; }
@@ -4982,13 +4981,6 @@ cropButtons.forEach(btn => {
 // Reddit / 4:3 coincide) and value-matching would light up all of them.
 function syncCropRatioButtons() {
   cropButtons.forEach(b => b.classList.toggle('active', b.dataset.ratio === cropRatioKey));
-}
-
-// Reset to Freeform (used whenever a new screenshot is loaded)
-function resetCrop() {
-  cropRatio = null;
-  cropRatioKey = 'free';
-  syncCropRatioButtons();
 }
 
 // ─── Capture button & shortcut display ───────────────────────────────────────

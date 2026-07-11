@@ -2,3 +2,4 @@ secrets.js
 node_modules/
 dist/
 out/
+.claude/

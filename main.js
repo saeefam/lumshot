@@ -1284,8 +1284,8 @@ ipcMain.handle('license:deactivate', async () => {
 // Push the current license status to all windows (e.g. after activation)
 function broadcastLicense() {
   const status = license.getStatus();
-  for (const w of [editorWindow]) {
-    if (w && !w.isDestroyed()) w.webContents.send('license-updated', status);
+  if (editorWindow && !editorWindow.isDestroyed()) {
+    editorWindow.webContents.send('license-updated', status);
   }
 }
 
@@ -1293,8 +1293,8 @@ ipcMain.on('license:open-buy', () => shell.openExternal(POLAR_CHECKOUT_URL));
 
 // ─── Settings IPC ────────────────────────────────────────────────────────────
 function broadcastSettings(s) {
-  for (const w of [editorWindow]) {
-    if (w && !w.isDestroyed()) w.webContents.send('settings-updated', s);
+  if (editorWindow && !editorWindow.isDestroyed()) {
+    editorWindow.webContents.send('settings-updated', s);
   }
 }
 
