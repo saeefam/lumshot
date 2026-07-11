@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onOverlaySetMode: (cb) =>
     ipcRenderer.on('overlay-set-mode', (_, m) => cb(m)),
 
+  // Main → overlay: enter/leave the scroll-capture "hold" state. While held, the
+  // overlay keeps the frozen selection highlighted with the surroundings dimmed
+  // (continuous capture feedback) but drops all its controls and stays click-
+  // through so the scroll capture can drive the page underneath.
+  onOverlayCapturing: (cb) =>
+    ipcRenderer.on('overlay-capturing', (_, on) => cb(on)),
+
   // Overlay → main: magnifier/freeze needs the captured frame's pixels
   requestOverlayFrame: () =>
     ipcRenderer.send('overlay-request-frame'),
@@ -120,6 +127,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Main → editor: show a brief toast message (e.g. "No image found in clipboard")
   onShowToast: (cb) =>
     ipcRenderer.on('show-toast', (_, msg) => cb(msg)),
+
+  // Main → editor: an auto-update finished downloading and is ready to install
+  // (payload is { current, latest }, both version strings like "v1.0.1")
+  onUpdateReady: (cb) =>
+    ipcRenderer.on('update:ready', (_, versions) => cb(versions)),
+
+  // Editor → main: user clicked "Install Now" on the update-ready toast
+  installUpdate: () =>
+    ipcRenderer.send('update:install'),
 
   // Main → editor: Edit menu Undo / Redo
   onMenuUndo: (cb) =>

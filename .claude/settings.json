@@ -500,12 +500,42 @@
       "Bash(node launch_and_watch.js)",
       "Bash(node check_fonts_timing.js)",
       "Bash(node verify_settled.js)",
-      "Bash(npm -v)"
+      "Bash(npm -v)",
+      "Bash(rm -f \"C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/0aa982be-a963-4262-8be2-40a5c36ca6e1/scratchpad/\"*.js 2>/dev/null *)",
+      "Bash(grep -n \"mode === 'create' && draft\\) {\\\\|delete draft._ox; delete draft._oy;\\\\|window.addEventListener\\('mouseup', \\(\\) => {\" editor.js)",
+      "Bash(node C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/820ec0ce-b95e-40b3-a7a2-b90866fdf442/scratchpad/cdp.js ' *)",
+      "Bash(node C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/820ec0ce-b95e-40b3-a7a2-b90866fdf442/scratchpad/cdp.js 'document.getElementById\\('\\\\''controls'\\\\''\\).getBoundingClientRect\\(\\).width')",
+      "Bash(node C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/820ec0ce-b95e-40b3-a7a2-b90866fdf442/scratchpad/cdp.js 'enterHistoryMode\\(\\).then\\(\\(\\) => document.getElementById\\('\\\\''history-controls'\\\\''\\).getBoundingClientRect\\(\\).width\\)')",
+      "Bash(timeout 10 node C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/820ec0ce-b95e-40b3-a7a2-b90866fdf442/scratchpad/shot.js C:/Users/Saeef/AppData/Local/Temp/claude/g--Lumshot/820ec0ce-b95e-40b3-a7a2-b90866fdf442/scratchpad/restore-verify.png)",
+      "Bash(awk 'NR>=2200 && NR<=2310 && /^function |^const .*= *function|^  refreshToolProps|refreshToolProps *=|^function refreshToolProps/' editor.js)",
+      "Bash(awk 'NR<=2307 && /^function [a-zA-Z]/ {ln=NR; name=$0} END{}' editor.js)",
+      "Bash(awk -F: '$1<=2307')",
+      "Bash(cat)",
+      "Bash(node /tmp/toolbar_check.js)",
+      "Bash(rm -f /tmp/toolbar_check.js)",
+      "Bash(node /tmp/tb2.js)",
+      "Bash(node /tmp/scale.js)",
+      "Bash(node /tmp/scale3.js)",
+      "Bash(ELECTRON_RUN_AS_NODE='' node -e ' *)",
+      "Bash(curl -s http://localhost:9333/json)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(t['title'],'::',t.get\\('webSocketDebuggerUrl',''\\)\\) for t in d]\")",
+      "Bash(curl -s http://localhost:9333/json/version)",
+      "Bash(node /tmp/tb_restore.js)",
+      "Bash(node /tmp/tb_big.js)",
+      "Bash(node /tmp/cdp.js)",
+      "Bash(node -e \"try{process.kill\\(23488,0\\);console.log\\('pid 23488 alive'\\);}catch\\(e\\){console.log\\('pid 23488 not running'\\);}\")",
+      "Bash(ls \"C:/Users/Saeef/.claude/projects/g--Lumshot/memory/\" | grep -i \"toolbar\\\\|topbar\\\\|canvas\" )",
+      "Read(//c/Users/Saeef/.claude/projects/g--Lumshot/memory/**)",
+      "Bash(node /tmp/tb_fix.js)",
+      "Bash(node /tmp/tb_center.js)",
+      "Bash(node /tmp/tb_design.js)",
+      "Bash(node /tmp/tb_fb.js)"
     ],
     "additionalDirectories": [
       "g:\\Lumshot\\dist",
       "G:\\Lumshot\\node_modules",
-      "\\tmp"
+      "\\tmp",
+      "C:\\Users\\Saeef\\AppData\\Local\\Temp\\claude\\g--Lumshot\\0aa982be-a963-4262-8be2-40a5c36ca6e1\\scratchpad"
     ]
   }
 }

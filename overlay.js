@@ -50,6 +50,11 @@ function scheduleDraw() {
 // it and press Start (rather than capturing immediately like region).
 let frozenRect = null;
 
+// True while a scroll capture is running: the overlay is HELD on screen as
+// continuous feedback (dimmed surroundings + the bright frozen selection), with
+// every control hidden. Set via onOverlayCapturing from main.
+let capturing = false;
+
 // ─── AI-workflow state ─────────────────────────────────────────────────────────
 // aiTargets: the running AI apps ({ appName, icon, img }), most recently used
 // first — the destination badge and Tab cycling draw from it. Arrives either
@@ -126,6 +131,13 @@ window.electronAPI.onOverlayReset((aidState) => {
   mouseX = mouseY = -1;
   mouseOnCanvas = false;
   frameReady = false; // last session's pixels are stale — never show them
+  // Clear any leftover held-capture state so the reused overlay starts clean
+  // (bar/hint/cursor restored) even if the previous session was a scroll capture.
+  if (capturing) {
+    capturing = false;
+    document.getElementById('bar').style.display = '';
+    document.body.style.cursor = '';
+  }
   aids.crosshair = !!(aidState && aidState.crosshair);
   aids.magnifier = !!(aidState && aidState.magnifier);
   // Inline on AI-hotkey entry; null on normal entry (arrives via
@@ -142,6 +154,25 @@ window.electronAPI.onOverlayReset((aidState) => {
 // Main → overlay: switch to a specific mode after reset (used by the Capture
 // Scroll and Capture-in-OCR-Mode menu items).
 window.electronAPI.onOverlaySetMode((m) => setMode(m));
+
+// Main → overlay: enter/leave the scroll-capture "hold" state. On enter we strip
+// the overlay down to just the frozen selection over the dimmed desktop — no bar,
+// hint, confirm buttons, corner handles, size label or precision aids — matching
+// exactly what the user saw at selection time, and hold it there for the whole
+// capture. On leave main hides the window, so we just reset the flag.
+window.electronAPI.onOverlayCapturing((on) => {
+  capturing = !!on;
+  if (capturing) {
+    hideScrollActions();
+    hint.style.display = 'none';
+    document.getElementById('bar').style.display = 'none';
+    document.body.style.cursor = 'default';
+  } else {
+    document.getElementById('bar').style.display = '';
+    document.body.style.cursor = '';
+  }
+  draw();
+});
 
 // ─── Mode selection ───────────────────────────────────────────────────────────
 function setMode(m) {
@@ -281,18 +312,21 @@ const BRAND_RGB = getComputedStyle(document.documentElement)
 // canvas fillStyle can't consume CSS var(), so this is kept in sync by hand.
 const SURFACE_HEX = '#161619';
 
-// Accent colour for the selection chrome — scroll gets a distinct tint so the
-// active mode is obvious even mid-drag.
+// Accent colour for the selection chrome. OCR keeps a distinct green (it's a
+// different kind of capture — text, not pixels); scroll and AI both use the
+// brand mint so the capture chrome stays on-brand (no off-palette amber).
 function modeColor() {
-  if (mode === 'scroll') return '255, 209, 102';   // amber
+  if (mode === 'scroll') return BRAND_RGB;         // brand accent — scroll capture
   if (mode === 'ocr')    return '48, 209, 88';     // green — OCR text capture
   if (mode === 'ai')     return BRAND_RGB;         // brand accent — AI Screenshot
   return '255, 255, 255';                          // region — white
 }
 
 // Draw the dim + a selection rectangle. `rect` is either the live drag or the
-// frozen scroll selection.
-function drawSelection(rect, rgb) {
+// frozen scroll selection. When `minimal` (the held scroll-capture feedback), only
+// the punch-through + border are drawn — no corner handles or size label — for a
+// clean, unobtrusive "this is being captured" look that holds for the whole run.
+function drawSelection(rect, rgb, minimal) {
   const { x, y, w, h } = rect;
   if (w < 1 || h < 1) return;
 
@@ -305,7 +339,9 @@ function drawSelection(rect, rgb) {
   const dx = Math.round(x * dpr), dy = Math.round(y * dpr);
   const dw = Math.round(w * dpr), dh = Math.round(h * dpr);
   ctx.clearRect(dx, dy, dw, dh);
-  if (frameReady) ctx.drawImage(frameCanvas, dx, dy, dw, dh, dx, dy, dw, dh);
+  // In the held capture state the selection must reveal the LIVE (scrolling) page,
+  // so leave it transparent — don't paint the frozen start-of-capture frame here.
+  if (frameReady && !minimal) ctx.drawImage(frameCanvas, dx, dy, dw, dh, dx, dy, dw, dh);
   ctx.restore();
 
   // Border around the selection — 1 logical px rendered as a whole number of
@@ -315,6 +351,8 @@ function drawSelection(rect, rgb) {
   ctx.strokeStyle = `rgba(${rgb}, 0.95)`;
   ctx.lineWidth = bw;
   ctx.strokeRect(snap(x) + bw / 2, snap(y) + bw / 2, snap(w) - bw, snap(h) - bw);
+
+  if (minimal) return; // held capture feedback: border only (no handles / label)
 
   // Small squares at each corner
   const hs = snap(7);
@@ -338,6 +376,26 @@ function drawSelection(rect, rgb) {
 }
 
 function draw() {
+  // Held scroll-capture feedback: dim only the SURROUNDINGS and leave the
+  // selection fully transparent so the LIVE page scrolling underneath shows
+  // through at full brightness (matching the reference). Drawn as a dim frame of
+  // four rects around the selection, plus the accent border — no frozen backdrop
+  // (that would freeze the moving page inside the selection).
+  if (capturing && frozenRect) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const sx = Math.round(frozenRect.x * dpr), sy = Math.round(frozenRect.y * dpr);
+    const sw = Math.round(frozenRect.w * dpr), sh = Math.round(frozenRect.h * dpr);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.fillRect(0, 0, canvas.width, sy);                                   // top
+    ctx.fillRect(0, sy + sh, canvas.width, canvas.height - (sy + sh));      // bottom
+    ctx.fillRect(0, sy, sx, sh);                                           // left
+    ctx.fillRect(sx + sw, sy, canvas.width - (sx + sw), sh);              // right
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawSelection(frozenRect, modeColor(), true);
+    return;
+  }
+
   // Backdrop pass in DEVICE space. The frozen frame and the backing store are
   // both at physical resolution, so drawImage with no scaling is pixel-exact —
   // the desktop looks identical to live, it just holds still.
@@ -369,10 +427,10 @@ function draw() {
     const h = Math.abs(curY - startY);
     drawSelection({ x, y, w, h }, rgb);
   } else if (frozenRect) {
-    drawSelection(frozenRect, rgb);
+    drawSelection(frozenRect, rgb, capturing);
   }
 
-  drawAids();
+  if (!capturing) drawAids();
 }
 
 // ─── Precision-aid rendering ───────────────────────────────────────────────────

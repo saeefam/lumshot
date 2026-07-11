@@ -40,7 +40,8 @@
     "asarUnpack": [
       "assets/ocr/**",
       "screenshot.ps1",
-      "focushelper.ps1"
+      "focushelper.ps1",
+      "scrollhelper.ps1"
     ],
     "files": [
       "main.js",

@@ -7,7 +7,13 @@
   <style>
     :root {
       --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      --amber: #ffd166;
+      /* Neutral floating-chrome palette — matches the capture overlay's pill
+         (overlay.html §palette) so the scroll bar reads as the same product. */
+      --pill-bg: #161619;
+      --pill-border: rgba(255, 255, 255, 0.12);
+      --text: #F2F2F5;
+      --idle: #A6A6B0;
+      --danger: #FF6259;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; font-family: var(--font); }
@@ -15,29 +21,30 @@
       position: fixed; inset: 0;
       display: flex; align-items: center; gap: 13px;
       padding: 0 12px 0 16px;
-      background: rgba(20, 20, 32, 0.95);
-      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: var(--pill-bg);
+      border: 1px solid var(--pill-border);
       border-radius: 15px;
-      box-shadow: 0 12px 38px rgba(0, 0, 0, 0.55);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
       backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
       -webkit-app-region: drag; user-select: none;
     }
     .rec-dot {
       width: 11px; height: 11px; border-radius: 50%;
-      background: var(--amber); flex-shrink: 0;
-      box-shadow: 0 0 8px rgba(255, 209, 102, 0.6);
+      background: var(--accent); flex-shrink: 0;
+      box-shadow: 0 0 8px var(--accent-ring);
       animation: pulse 1.1s ease-in-out infinite;
     }
-    .rec-dot.done { background: #5ad19a; box-shadow: none; animation: none; }
+    .rec-dot.done { background: var(--accent); box-shadow: none; animation: none; }
+    .rec-dot.error { background: var(--danger, #FF6259); box-shadow: none; animation: none; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-    .info { flex: 1; min-width: 168px; color: #f2f1fb; }
+    .info { flex: 1; min-width: 168px; color: var(--text); }
     .info .title { font-size: 12.5px; font-weight: 600; display: flex; justify-content: space-between; gap: 10px; }
-    .info .title .h { color: #c9c8e6; font-variant-numeric: tabular-nums; font-weight: 500; }
+    .info .title .h { color: var(--idle); font-variant-numeric: tabular-nums; font-weight: 500; }
     .track { margin-top: 6px; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; }
     .track .fill {
       height: 100%; width: 12%;
-      background: linear-gradient(90deg, var(--amber), #ffe6a8);
+      background: linear-gradient(90deg, var(--accent), var(--accent-hover));
       border-radius: 3px; transition: width 0.25s ease;
     }
     /* Indeterminate sweep while scrolling (no known total) */
@@ -57,8 +64,8 @@
     button:active { transform: scale(0.95); }
     #stop   { background: var(--accent); color: var(--on-accent); }
     #stop:hover { background: var(--accent-hover); }
-    #cancel { background: rgba(255,255,255,0.08); color: #ff9b9b; }
-    #cancel:hover { background: rgba(255, 90, 90, 0.18); }
+    #cancel { background: rgba(255,255,255,0.08); color: var(--danger); }
+    #cancel:hover { background: rgba(255, 98, 89, 0.18); }
   </style>
 </head>
 <body>

@@ -100,6 +100,7 @@ let editorReady       = false;   // editor has painted its first frame (per-crea
 let editorFocusPending = false;  // showEditor() ran before the first paint — finish on ready
 let overlayWindow     = null;    // persistent, pre-created at startup; shown/hidden per capture
 let overlayVisible    = false;   // true while the region-selection overlay is on screen
+let overlayCapturing  = false;   // true while the overlay is held as scroll-capture feedback
 let pendingOverlayBounds = null; // display bounds to position the overlay before showing
 let overlayReady      = false;   // overlay has loaded + painted its first full-size frame
 let overlayShowPending = false;  // a show was requested before the overlay was ready
@@ -351,9 +352,12 @@ function dispatchCapture(dataUrl, imgW, imgH) {
 //
 // desktopCapturer is a *thumbnail* pipeline: per Electron's own docs the result
 // "is not guaranteed [to match] thumbnailSize… depends on the scale of the
-// screen", so it resamples the frame and softens text on HiDPI displays. We keep
-// it for the high-frequency scroll-capture loop (it's fast and needs no process
-// spawn), but single-shot grabs go through grabFullScreenSharp() below instead.
+// screen", so it resamples the frame and softens text on HiDPI displays (verified:
+// a 3840×2160 screen comes back as 3841×2161 on a 1.75× display — a fractional
+// rescale that turns integer scrolls into sub-pixel offsets and wrecks stitch
+// alignment). It's now only a FALLBACK: both single-shot grabs (grabFullScreenSharp)
+// and the scroll-capture loop (scrollGrab) use the pixel-exact native BitBlt path
+// first, dropping here only if the helper is unavailable.
 async function grabFullScreen() {
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.size;
@@ -376,12 +380,17 @@ let captureHelperReady = null;  // Promise<boolean> — resolves true once it pr
 let captureSeq         = 0;     // request id counter
 const capturePending   = new Map(); // id → { resolve, reject, outPath, timer }
 
-function captureHelperScriptPath() {
-  // In a packaged build the .ps1 lives in app.asar (a virtual archive an external
-  // process can't read); asarUnpack extracts it, so point PowerShell at the real
-  // on-disk copy. In dev (__dirname is the source dir) this replace is a no-op.
-  return path.join(__dirname, 'screenshot.ps1')
+// In a packaged build a .ps1 under `files` lives in app.asar (a virtual archive an
+// external process can't read); asarUnpack extracts matching entries to a parallel
+// app.asar.unpacked tree, so point PowerShell at the real on-disk copy. In dev
+// (__dirname is the source dir) this replace is a no-op.
+function helperScriptPath(name) {
+  return path.join(__dirname, name)
     .replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+}
+
+function captureHelperScriptPath() {
+  return helperScriptPath('screenshot.ps1');
 }
 
 // Match a helper response line ("OK <id> <w> <h>" | "ERR <id> <msg>") to its request.
@@ -539,7 +548,7 @@ async function startCapture(initialMode = 'region') {
 }
 
 // Opens the capture overlay pre-set to scroll mode so the user immediately sees
-// the amber scroll-select UI instead of having to click the Scroll mode button.
+// the scroll-select UI instead of having to click the Scroll mode button.
 // The mode is applied atomically during the reveal (see revealOverlay).
 function startCaptureScroll() { startCapture('scroll'); }
 
@@ -792,7 +801,28 @@ function revealOverlay() {
 // receives no input, so it behaves exactly like a hidden window.
 function hideOverlay() {
   overlayVisible = false;
-  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.setBounds(parkedBounds());
+  overlayCapturing = false;
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setIgnoreMouseEvents(false);
+    overlayWindow.setBounds(parkedBounds());
+  }
+}
+
+// Scroll capture: instead of hiding the overlay when the user presses Start, hold
+// it on screen showing the frozen selection (bright) + dimmed surroundings for the
+// whole capture — continuous "this is what's being captured" feedback (like
+// CleanShot). The overlay is already content-protected, so it never appears in the
+// grabbed frames; we make it click-through so wheel events reach the page beneath,
+// and tell the renderer to drop its controls down to just the selection visual.
+function enterOverlayCaptureMode() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayCapturing = true;
+  overlayVisible = false; // no longer the interactive selection overlay
+  const b = pendingOverlayBounds || screen.getPrimaryDisplay().bounds;
+  overlayWindow.setBounds(b);                 // keep it on-screen over the capture
+  overlayWindow.setIgnoreMouseEvents(true);   // click-through: wheel hits the page
+  overlayWindow.blur();                       // don't hold keyboard focus
+  overlayWindow.webContents.send('overlay-capturing', true);
 }
 
 // ─── File / Clipboard open ────────────────────────────────────────────────────
@@ -852,6 +882,19 @@ async function cropPendingTo(rect) {
 ipcMain.on('region-selected', async (event, rect) => {
   const mode = rect.mode || 'region';
   pendingOcrCapture = !!rect.ocr; // scroll ignores OCR (set false by the overlay)
+
+  // Scroll capture: HOLD the overlay on screen as continuous capture feedback
+  // (frozen selection bright, surroundings dimmed) instead of hiding it. Every
+  // other mode hides the overlay immediately as before.
+  if (mode === 'scroll') {
+    enterOverlayCaptureMode();
+    aiCandidates = [];
+    pendingAiTargets = null;
+    pendingCapture = null;
+    startScrollCapture(rect);
+    return;
+  }
+
   hideOverlay();
 
   // AI workflow: the overlay reports mode 'ai' plus the destination index the
@@ -863,14 +906,6 @@ ipcMain.on('region-selected', async (event, rect) => {
     : null;
   aiCandidates = [];
   pendingAiTargets = null;
-
-  // Scroll capture runs its own repeated-grab session; the single background
-  // grab isn't used here.
-  if (mode === 'scroll') {
-    pendingCapture = null;
-    startScrollCapture(rect);
-    return;
-  }
 
   try {
     const crop = await cropPendingTo(rect);
@@ -1366,6 +1401,11 @@ ipcMain.handle('app:check-updates', () => {
   return { ok: true };
 });
 
+// In-app update-ready toast → "Install Now": restart and apply immediately.
+ipcMain.on('update:install', () => {
+  if (updateReady) { isQuitting = true; require('electron-updater').autoUpdater.quitAndInstall(); }
+});
+
 // Renderer reports undo/redo stack availability so the Edit menu can gray items.
 ipcMain.on('undo-redo-state', (_, { canUndo, canRedo }) => {
   if (!appMenu) return;
@@ -1782,14 +1822,19 @@ function startScrollCapture(rect) {
     },
     canvas: null,                    // BGRA buffer of the stitched image (grows down)
     width: 0,                        // physical px width of the region
+    height: 0,                       // physical px height of one captured frame
     totalHeight: 0,                  // physical px height accumulated so far
     lastFrame: null,                 // previous frame's BGRA buffer (offset detection)
     frames: 0,
     pxPerNotch: null,                // learned scroll distance per wheel notch
     noMoveCount: 0,                  // consecutive frames with no scroll → bottom
     lastPreviewAt: 0,
-    maxFrames: 300,                  // safety caps
-    maxHeight: 100000,
+    stickyTop: 0,                    // px of a non-scrolling sticky header (excluded from alignment)
+    stickyBottom: 0,                 // reserved (always 0 — sticky footers handled by offset detection)
+    stickyLocked: false,             // sticky header confirmed (needs 2 consistent reads)
+    stickyProbe: null,               // first sticky measurement, awaiting confirmation
+    maxFrames: 600,                  // safety caps
+    maxHeight: 200000,
     aborted: false,
     finishing: false,
     ps: null,                        // PowerShell input helper
@@ -1799,27 +1844,34 @@ function startScrollCapture(rect) {
   runScrollSession();
 }
 
-// Spawn the persistent PowerShell input helper and resolve once it prints READY
-// (or after a short timeout, so a slow Add-Type never blocks the capture).
+// Spawn the persistent PowerShell input helper and resolve true once it prints
+// READY, or false if it fails to spawn, errors, exits early, or never reports
+// READY within the timeout (a slow Add-Type compile shouldn't block forever, but a
+// genuine failure must be distinguishable from "just slow" so callers can abort
+// instead of silently producing a degenerate 1-frame "scroll capture").
 function startScrollHelper() {
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
     let ps;
     try {
       ps = spawn('powershell.exe',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'scrollhelper.ps1')],
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperScriptPath('scrollhelper.ps1')],
         { windowsHide: true });
     } catch (err) {
       console.error('scroll helper spawn failed:', err);
-      return resolve();
+      return resolve(false);
     }
     if (scrollSession) scrollSession.ps = ps;
     let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-    const to = setTimeout(finish, 4000);
-    ps.stdout.on('data', (d) => { if (d.toString().includes('READY')) { clearTimeout(to); finish(); } });
-    ps.on('error', (err) => { console.error('scroll helper error:', err); clearTimeout(to); finish(); });
-    ps.on('exit', () => { if (scrollSession && scrollSession.ps === ps) scrollSession.ps = null; });
+    const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
+    const to = setTimeout(() => finish(false), 4000);
+    ps.stdout.on('data', (d) => { if (d.toString().includes('READY')) { clearTimeout(to); finish(true); } });
+    ps.stderr.on('data', (d) => console.error('scroll helper stderr:', d.toString().trim()));
+    ps.on('error', (err) => { console.error('scroll helper error:', err); clearTimeout(to); finish(false); });
+    ps.on('exit', (code) => {
+      if (scrollSession && scrollSession.ps === ps) scrollSession.ps = null;
+      if (!done) { console.error('scroll helper exited early, code', code); clearTimeout(to); finish(false); }
+    });
   });
 }
 
@@ -1844,8 +1896,20 @@ async function runScrollSession() {
   if (!s) return;
 
   sendScrollUI({ status: 'Preparing…' });
-  await startScrollHelper();
+  const helperReady = await startScrollHelper();
   if (!scrollSession || scrollSession.aborted) return;
+  if (!helperReady) {
+    // Auto-scroll can't be driven without the input helper — bail instead of
+    // silently finalizing a single-frame "stitch" that looks like a plain
+    // region capture with no explanation.
+    sendScrollUI({ status: 'Scroll capture failed to start — try again', error: true, done: true });
+    await delay(1400);
+    scrollSession = null;
+    endScrollSession();
+    if (pinWindow && !pinWindow.isDestroyed()) { pinWindow.destroy(); pinWindow = null; }
+    if (editorVisibleBeforeCapture) showEditor();
+    return;
+  }
 
   // Park the cursor in the centre of the region so wheel events hit the target
   // window (Windows "scroll inactive windows under pointer" is on by default).
@@ -1861,16 +1925,22 @@ async function runScrollSession() {
   while (scrollSession && !scrollSession.aborted && !scrollSession.finishing) {
     if (s.frames >= s.maxFrames || s.totalHeight >= s.maxHeight) break;
 
-    // How far to scroll: ~70% of the region height, converted to wheel notches
-    // once we've learned how many pixels a notch moves.
-    const targetPx = Math.max(60, Math.round(s.phys.h * 0.7));
+    // How far to scroll each step: ~55% of the SCROLLING band (viewport minus any
+    // sticky header/footer). A smaller step keeps ~45% overlap between consecutive
+    // frames, giving the offset detector far more content to align against — the
+    // more overlap, the more reliable and pixel-accurate the stitch. Converted to
+    // wheel notches once we've learned how many px a notch moves.
+    const bandH = Math.max(40, s.height - s.stickyTop - s.stickyBottom || s.phys.h);
+    const targetPx = Math.max(60, Math.round(bandH * 0.55));
     let notches = s.pxPerNotch && s.pxPerNotch > 0
       ? Math.max(1, Math.round(targetPx / s.pxPerNotch))
       : 3 + s.noMoveCount * 2; // not calibrated yet — nudge harder if nothing moved
     notches = Math.min(notches, 40);
 
     scrollWrite(`WHEEL ${-120 * notches}`);
-    await delay(105); // settle for the page to render the new content
+    // grabSettledFrame() waits for the page to stop rendering, so a short fixed
+    // delay here only needs to cover input→scroll latency, not full re-layout.
+    await delay(60);
     if (!scrollSession || scrollSession.aborted || scrollSession.finishing) break;
 
     const moved = await captureAndStitch(notches);
@@ -1888,41 +1958,167 @@ async function runScrollSession() {
   if (scrollSession && !scrollSession.aborted) finalizeScroll();
 }
 
+// One pixel-exact grab of the scroll region as a BGRA buffer.
+//
+// Uses the native GDI BitBlt helper (zero resampling — sharp text and, crucially
+// for stitching, EXACT integer pixels so a scroll of N physical px lands at an
+// integer offset). desktopCapturer is the fallback only; its resampled thumbnail
+// can differ from the true framebuffer by ~1px in each axis (verified: 3840×2160
+// screen → 3841×2161 thumbnail on a 1.75× display), which turns integer scrolls
+// into fractional offsets and is the primary source of sub-pixel seams.
+//
+// Crop coordinates are derived from the ACTUAL returned image size, not an assumed
+// rect×scaleFactor, so a non-integer display scale or a helper/desktopCapturer size
+// mismatch can never shift or scale the crop.
+async function scrollGrab() {
+  const s = scrollSession;
+  if (!s) return null;
+  let shot;
+  try { shot = await grabFullScreenNative(); }
+  catch (e) {
+    try { shot = await grabFullScreen(); } catch (e2) { return null; }
+  }
+  if (!scrollSession || !shot || !shot.image) return null;
+
+  const size = shot.image.getSize();
+  const disp = screen.getPrimaryDisplay();
+  // Map the DIP selection rect onto the actual grabbed image via the true image /
+  // DIP ratio (not display.scaleFactor, which can disagree with the real capture).
+  const rx = size.width  / disp.size.width;
+  const ry = size.height / disp.size.height;
+  let x = Math.round(s.rect.x * rx);
+  let y = Math.round(s.rect.y * ry);
+  let w = Math.round(s.rect.w * rx);
+  let h = Math.round(s.rect.h * ry);
+  x = Math.max(0, Math.min(x, size.width  - 1));
+  y = Math.max(0, Math.min(y, size.height - 1));
+  w = Math.max(1, Math.min(w, size.width  - x));
+  h = Math.max(1, Math.min(h, size.height - y));
+  const bmp = shot.image.crop({ x, y, width: w, height: h }).toBitmap();
+  return { bmp, w, h };
+}
+
+// Grab the region only once the page has stopped changing, so we never stitch a
+// half-rendered frame (lazy images, reflow, scroll-anchored animations). Grabs
+// repeatedly until two consecutive grabs are essentially identical (settled) or a
+// time budget is spent. Returns the settled frame { bmp, w, h }.
+async function grabSettledFrame() {
+  const s = scrollSession;
+  if (!s) return null;
+  let prev = await scrollGrab();
+  if (!prev) return null;
+  const deadline = Date.now() + 320; // hard cap so a perpetually-animating page still progresses
+  while (scrollSession && !scrollSession.aborted && !scrollSession.finishing && Date.now() < deadline) {
+    await delay(45);
+    const cur = await scrollGrab();
+    if (!cur) return prev;
+    if (cur.w === prev.w && cur.h === prev.h && framesEqual(prev.bmp, cur.bmp, cur.w, cur.h)) {
+      return cur; // two identical grabs in a row → rendering has settled
+    }
+    prev = cur;
+  }
+  return prev;
+}
+
+// Measure sticky (non-scrolling) bands: rows at the very top / very bottom that are
+// pixel-identical between two frames the content scrolled between. Fixed/sticky UI
+// (nav bars, cookie bars) must be excluded from alignment + body or it gets matched
+// wrong and duplicated down the image.
+//
+// A single frame pair can't tell a real sticky bar from a solid band that merely
+// looked the same across a small scroll (false positive → trims real content). So
+// this only reports the bands; the caller (captureAndStitch) requires the SAME band
+// to be seen on two consecutive measurements before trusting it, and a hard minimum
+// size, which together kill the false positives while still catching real bars.
+function measureSticky(prev, cur, w, h) {
+  const rowBytes = w * 4;
+  const colStep = Math.max(4, Math.floor(w / 96)) * 4;
+  const rowSame = (y) => {
+    let sum = 0, n = 0;
+    const base = y * rowBytes;
+    for (let c = 0; c < rowBytes; c += colStep) { const d = cur[base + c] - prev[base + c]; sum += d < 0 ? -d : d; n++; }
+    return n ? sum / n < 2 : true;
+  };
+  // A real sticky bar also has internal detail (it's UI, not a blank margin). Guard
+  // against blank page margins by requiring the band to contain some horizontal
+  // variation; otherwise a plain white/solid strip at the edge reads as "sticky".
+  const rowHasDetail = (y) => {
+    let mn = 255, mx = 0; const base = y * rowBytes;
+    for (let c = 0; c < rowBytes; c += colStep) { const v = cur[base + c]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    return mx - mn > 24;
+  };
+  // We ONLY special-case a sticky HEADER: it's common (nav bars) and safe to exclude
+  // from alignment + keep once at the top. A sticky FOOTER is rare and excising/
+  // re-appending it is error-prone, so a normal footer is left to the (full-range,
+  // prediction-anchored) offset detector, which handles it correctly.
+  const maxBand = Math.floor(h * 0.4); // a sticky band shouldn't exceed 40% of the viewport
+  let top = 0; while (top < maxBand && rowSame(top)) top++;
+  // A real sticky bar needs a solid minimum height AND internal detail (it's UI, not
+  // a blank page margin / solid background strip).
+  const MIN = 12;
+  let topDetail = false; for (let y = 0; y < top; y++) if (rowHasDetail(y)) { topDetail = true; break; }
+  return { stickyTop: (top >= MIN && topDetail) ? top : 0, stickyBottom: 0 };
+}
+
 // Grab the region, stitch the newly-revealed rows, learn px-per-notch, and return
 // how many pixels the content moved this step (0 = no scroll detected).
 async function captureAndStitch(notchesSent) {
   const s = scrollSession;
   if (!s) return 0;
 
-  let shot;
-  try { shot = await grabFullScreen(); } catch (err) { return 0; }
-  if (!scrollSession || !shot || !shot.image) return 0;
+  const frame = await grabSettledFrame();
+  if (!scrollSession || !frame) return 0;
+  const { bmp, w, h } = frame;
+  const rowBytes = w * 4;
 
-  const size = shot.image.getSize();
-  let { x, y, w, h } = s.phys;
-  x = Math.max(0, Math.min(x, size.width  - 1));
-  y = Math.max(0, Math.min(y, size.height - 1));
-  w = Math.max(1, Math.min(w, size.width  - x));
-  h = Math.max(1, Math.min(h, size.height - y));
-  const bmp = shot.image.crop({ x, y, width: w, height: h }).toBitmap();
-
-  if (!s.canvas) { // seed the stitched canvas
+  // Seed the canvas with the first frame immediately (full frame). We stitch from
+  // frame 2 onward with no gap; the sticky header — if any — is excluded from
+  // ALIGNMENT once confirmed, but is never duplicated because appends only add the
+  // newly-revealed BOTTOM rows (which never contain the top header band).
+  if (!s.canvas) {
     s.canvas = Buffer.from(bmp);
     s.lastFrame = Buffer.from(bmp);
-    s.width = w;
-    s.totalHeight = h;
-    s.frames = 1;
+    s.width = w; s.height = h; s.totalHeight = h; s.frames = 1;
     return h;
   }
-  if (w !== s.width) return 0; // resolution changed — skip
+  if (w !== s.width || h !== s.height) return 0; // resolution changed — skip
+
+  // End-of-page guard: an unchanged frame means the page did not scroll — we're at
+  // the bottom. Checked before findScrollOffset so a repeating footer can never
+  // lock the alignment onto a spurious non-zero offset and re-stitch itself.
+  if (framesEqual(s.lastFrame, bmp, w, h)) {
+    s.lastFrame = Buffer.from(bmp);
+    s.frames++;
+    return 0;
+  }
+
+  // Confirm a sticky header before trusting it: require TWO consecutive measurements
+  // to agree (±2px). A single frame pair can mistake a solid band for a fixed bar.
+  // Until confirmed we align on the whole frame (sticky=0) — harmless, since the
+  // scrolling content dominates the match and the header matches at every offset.
+  if (!s.stickyLocked) {
+    const sb = measureSticky(s.lastFrame, bmp, w, h);
+    const near = (a, b) => Math.abs(a - b) <= 2;
+    if (s.stickyProbe && near(s.stickyProbe.stickyTop, sb.stickyTop)) {
+      s.stickyTop = Math.min(s.stickyProbe.stickyTop, sb.stickyTop);
+      s.stickyLocked = true;
+    } else {
+      s.stickyProbe = sb; // keep aligning with current sticky (0) meanwhile
+    }
+  }
 
   const expected = (notchesSent && s.pxPerNotch) ? Math.round(s.pxPerNotch * notchesSent) : 0;
-  const d = findScrollOffset(s.lastFrame, bmp, w, h, expected);
+  const d = findScrollOffset(s.lastFrame, bmp, w, h, expected, s.stickyTop, s.stickyBottom);
   if (d > 0) {
-    const rowBytes = w * 4;
-    const start = (h - d) * rowBytes;
-    s.canvas = Buffer.concat([s.canvas, bmp.subarray(start, start + d * rowBytes)]);
-    s.totalHeight += d;
+    // Append the d newly-revealed rows from the bottom of this frame: rows
+    // [h-d, h). These are the pixels that scrolled into view since the last frame,
+    // so they join the canvas seamlessly right below what's already there.
+    const revealStart = Math.max(0, h - d);
+    const take = h - revealStart;
+    if (take > 0) {
+      s.canvas = Buffer.concat([s.canvas, bmp.subarray(revealStart * rowBytes, h * rowBytes)]);
+      s.totalHeight += take;
+    }
     if (notchesSent > 0) {
       const est = d / notchesSent;
       s.pxPerNotch = s.pxPerNotch ? (s.pxPerNotch * 0.6 + est * 0.4) : est;
@@ -1933,54 +2129,172 @@ async function captureAndStitch(notchesSent) {
   return d;
 }
 
-// Find how many pixels content scrolled DOWN between two frames by aligning
-// cur[y] against prev[y+d]. `expected` (if >0) restricts the search to a narrow
-// band around the predicted offset for speed; a weak match falls back to a full
-// search once. Returns the best offset d (0 = no confident scroll).
-function findScrollOffset(prev, cur, w, h, expected) {
+// True when two frames are essentially identical (the page did not scroll — we're
+// at the bottom). This is the authoritative end-of-page signal: at the true bottom
+// a wheel event moves nothing, so consecutive grabs are pixel-for-pixel equal
+// (allowing for a hair of BitBlt noise / caret blink). A dense grid is sampled; the
+// mean absolute per-channel diff staying tiny AND almost no rows differing both have
+// to hold, so a page that only changed a blinking cursor still reads as "no scroll"
+// while a real 1px shift does not.
+function framesEqual(prev, cur, w, h) {
   const rowBytes = w * 4;
-  const maxD = Math.min(h - 1, Math.floor(h * 0.92));
-  const colStep = Math.max(4, Math.floor(w / 48)) * 4; // sample ~48 columns
-  const rowSamples = 40;
-
-  function scoreFor(d) {
-    let score = 0, count = 0;
-    const yEnd = h - d;
-    const yStep = Math.max(1, Math.floor(yEnd / rowSamples));
-    for (let y = 0; y < yEnd; y += yStep) {
-      const cr = y * rowBytes;
-      const pr = (y + d) * rowBytes;
-      for (let c = 0; c < rowBytes; c += colStep) {
-        const diff = cur[cr + c] - prev[pr + c];
-        score += diff < 0 ? -diff : diff;
-        count++;
-      }
+  const colStep = Math.max(4, Math.floor(w / 64)) * 4; // ~64 columns
+  const rowStep = Math.max(1, Math.floor(h / 120));    // ~120 rows
+  let sum = 0, count = 0, changedRows = 0, totalRows = 0;
+  for (let y = 0; y < h; y += rowStep) {
+    const base = y * rowBytes;
+    let rowDiff = 0, rowCount = 0;
+    for (let c = 0; c < rowBytes; c += colStep) {
+      const diff = cur[base + c] - prev[base + c];
+      const a = diff < 0 ? -diff : diff;
+      rowDiff += a; rowCount++;
     }
-    return count ? score / count : Infinity;
+    sum += rowDiff; count += rowCount;
+    totalRows++;
+    if (rowCount && rowDiff / rowCount > 6) changedRows++; // this row visibly moved
+  }
+  if (!count) return true;
+  const meanDiff = sum / count;
+  const changedFrac = totalRows ? changedRows / totalRows : 0;
+  // Identical enough overall AND fewer than ~4% of sampled rows changed.
+  return meanDiff < 2.2 && changedFrac < 0.04;
+}
+
+// Find how many pixels content scrolled DOWN between two frames by aligning
+// cur[y] against prev[y+d]. This is the heart of stitch accuracy, so it uses
+// ROW-SIGNATURE correlation rather than a whole-frame SAD:
+//
+//   • Each row is reduced to a fixed-column luma signature.
+//   • Each row gets a DISTINCTIVENESS weight = how much it differs from the row
+//     above it (a vertical-edge / text measure). Flat bands — white footer gaps,
+//     solid backgrounds — get ~0 weight, so they can't create false low-score
+//     plateaus that a plain SAD locks onto.
+//   • For each candidate d, the cost is the weighted mean abs-diff between cur[y]
+//     and prev[y+d] over the overlap. Distinctive rows (text) dominate the cost,
+//     giving a SHARP, unique minimum at the true offset.
+//
+// The search covers the FULL [1, maxD] range (the page can clamp to a tiny shift
+// on any step — especially the last, at the footer — so a window around the
+// predicted offset would miss the true small offset and duplicate content). The
+// result is accepted only if the minimum is both strong AND clearly unique; an
+// ambiguous/periodic overlap returns 0 so end-detection settles it rather than
+// guessing. Only the scrolling band [stickyTop, h-stickyBottom) participates.
+function findScrollOffset(prev, cur, w, h, expected, stickyTop, stickyBottom) {
+  const rowBytes = w * 4;
+  const top = stickyTop || 0;
+  const bottomLimit = h - (stickyBottom || 0);          // exclusive
+  const band = bottomLimit - top;                       // scrolling content height
+  if (band < 16) return 0;
+  const maxD = Math.min(band - 1, Math.floor(band * 0.9));
+
+  // Fixed sample columns (same set for every row so signatures are comparable).
+  const nCols = Math.min(160, w);
+  const cols = new Int32Array(nCols);
+  for (let i = 0; i < nCols; i++) cols[i] = Math.min(w - 1, Math.floor((i + 0.5) * w / nCols)) * 4;
+
+  // Per-row luma signature (sum of R+G+B at each sample column) for both frames.
+  const sig = (buf) => {
+    const s = new Int32Array(h * nCols);
+    for (let y = 0; y < h; y++) {
+      const base = y * rowBytes, o = y * nCols;
+      for (let i = 0; i < nCols; i++) { const c = base + cols[i]; s[o + i] = buf[c] + buf[c + 1] + buf[c + 2]; }
+    }
+    return s;
+  };
+  const P = sig(prev), C = sig(cur);
+
+  // Distinctiveness weight per row of cur = mean abs vertical gradient (row vs the
+  // row above). Text/edges → high; flat background → ~0. Used to weight the cost so
+  // featureless bands don't sway the alignment.
+  const wgt = new Float64Array(h);
+  for (let y = top + 1; y < bottomLimit; y++) {
+    const o = y * nCols, o1 = (y - 1) * nCols; let g = 0;
+    for (let i = 0; i < nCols; i++) { const dd = C[o + i] - C[o1 + i]; g += dd < 0 ? -dd : dd; }
+    wgt[y] = g / nCols;
   }
 
-  let lo = 1, hi = maxD;
-  if (expected && expected > 0) {
-    const margin = Math.round(expected * 0.4) + 14;
-    lo = Math.max(1, expected - margin);
-    hi = Math.min(maxD, expected + margin);
+  // Weighted mean abs-diff of cur[y] vs prev[y+d] over the overlap band.
+  const rowStep = Math.max(1, Math.floor(band / 140)); // ~140 rows sampled
+  function costFor(d) {
+    let num = 0, den = 0;
+    const yEnd = bottomLimit - d;
+    for (let y = top + 1; y < yEnd; y += rowStep) {
+      const wq = wgt[y];
+      if (wq < 6) continue;                 // skip near-flat rows entirely
+      const oc = y * nCols, op = (y + d) * nCols;
+      let s = 0;
+      for (let i = 0; i < nCols; i++) { const dl = C[oc + i] - P[op + i]; s += dl < 0 ? -dl : dl; }
+      num += (s / nCols) * wq; den += wq;
+    }
+    return den > 0 ? num / den : Infinity;
   }
 
-  let best = 0, bestScore = Infinity;
-  for (let d = lo; d <= hi; d += 2) {
-    const sc = scoreFor(d);
-    if (sc < bestScore) { bestScore = sc; best = d; }
-  }
-  for (let d = Math.max(1, best - 1); d <= Math.min(maxD, best + 1); d++) {
-    const sc = scoreFor(d);
-    if (sc < bestScore) { bestScore = sc; best = d; }
-  }
+  // ALWAYS search the full [1, maxD] range. The page can clamp to a much smaller
+  // shift than requested on ANY step (most importantly the last one at the footer),
+  // so a window centred on the predicted offset would miss the true small offset
+  // and lock onto a spurious match — the classic duplicated/misaligned footer.
+  const coarse = Math.max(1, Math.floor(maxD / 300)) * 2;
+  let gMin = Infinity;
+  const coarseScores = [];
+  for (let d = 1; d <= maxD; d += coarse) { const c = costFor(d); coarseScores.push({ d, c }); if (c < gMin) gMin = c; }
+  if (!isFinite(gMin)) return 0;            // no distinctive rows to align on
 
-  if (bestScore > 24) {
-    if (expected && expected > 0) return findScrollOffset(prev, cur, w, h, 0); // widen once
-    return 0;
+  // A "typical" (wrong-offset) cost = median of the coarse scan. The true offset
+  // sits in a valley FAR below this; acceptance is judged RELATIVE to it, so the
+  // detector works the same on dense text and on sparse footers (scale-independent)
+  // instead of relying on an absolute pixel-diff threshold.
+  const sortedC = coarseScores.map((s) => s.c).filter(isFinite).sort((a, b) => a - b);
+  const median = sortedC[Math.floor(sortedC.length / 2)] || gMin;
+
+  const cut = gMin + (median - gMin) * 0.5 + 2;   // "near the minimum" band (generous)
+  const refine = (d0) => { let bd = d0, bc = Infinity; const lo = Math.max(1, d0 - coarse - 1), hi = Math.min(maxD, d0 + coarse + 1); for (let dd = lo; dd <= hi; dd++) { const cc = costFor(dd); if (cc < bc) { bc = cc; bd = dd; } } return { d: bd, c: bc }; };
+  const basins = [];
+  for (const { d, c } of coarseScores) {
+    if (c > cut) continue;
+    const b = refine(d);
+    if (!basins.some((x) => Math.abs(x.d - b.d) <= 2)) basins.push(b);
   }
-  return best;
+  // Always evaluate the basin AT the physical prediction, even if the coarse scan
+  // didn't flag it — the true offset is usually right at `expected` mid-page, and a
+  // slightly-higher-cost true basin must still be a candidate so selection can prefer
+  // it over a spurious lower-cost echo elsewhere.
+  if (expected && expected > 1 && expected < maxD) {
+    const b = refine(expected);
+    if (!basins.some((x) => Math.abs(x.d - b.d) <= 2)) basins.push(b);
+  }
+  if (!basins.length) return 0;
+  basins.sort((a, b) => a.c - b.c);
+
+  const best = basins[0];
+  // Confidence: the minimum must be a CLEAR valley — well below the typical cost.
+  const depth = median - best.c;
+  if (depth < Math.max(4, median * 0.25)) return 0;
+
+  // A basin is "good" if its cost is close to the best AND far below typical — a real
+  // alignment, not a shallow dip. `goodCut` is generous so the true offset counts
+  // even when a spurious echo scored a hair lower.
+  const goodCut = Math.min(best.c + Math.max(6, depth * 0.5), gMin + (median - gMin) * 0.4);
+  const good = basins.filter((b) => b.c <= goodCut);
+
+  // Selection. The lowest-cost basin (`best`) is the strongest pixel match and is
+  // the default answer. The PHYSICAL prediction only breaks TIES: when several
+  // basins match almost equally well (repeating/periodic overlap), `expected` — the
+  // known wheel distance — disambiguates. Crucially it does NOT override a clearly
+  // better match: if the page actually clamped to a smaller scroll than requested,
+  // that smaller offset has a distinctly lower cost and wins on its own. This keeps
+  // both cases right: normal steps land on expected, the final partial step lands on
+  // the real (smaller) shift.
+  const tieCut = best.c + Math.max(4, depth * 0.18);      // "essentially as good as best"
+  const tied = good.filter((b) => b.c <= tieCut);
+  if (tied.length > 1) {
+    if (expected && expected > 0) {
+      const byPred = tied.slice().sort((a, b) => Math.abs(a.d - expected) - Math.abs(b.d - expected));
+      if (Math.abs(byPred[0].d - expected) <= Math.max(14, expected * 0.3)) return byPred[0].d;
+    }
+    // No decisive prediction among the tied basins → smallest (avoid periodic echo).
+    return tied.sort((a, b) => a.d - b.d)[0].d;
+  }
+  return best.d;
 }
 
 function sendScrollUI(payload) {
@@ -2060,6 +2374,10 @@ function ensureScrollPreviewPin() {
 function endScrollSession() {
   if (scrollWindow && !scrollWindow.isDestroyed()) scrollWindow.close();
   scrollWindow = null;
+  // Release the held selection overlay (shown as capture feedback since Start).
+  // Every scroll teardown path — finalize, cancel, helper-failed bail — routes
+  // through here, so the overlay is always cleaned up exactly once.
+  if (overlayCapturing) hideOverlay();
 }
 
 // Finish the capture using everything stitched so far → editor + final pin.
@@ -2190,13 +2508,22 @@ function setupAutoUpdate() {
     });
   });
 
-  autoUpdater.on('update-downloaded', () => {
+  autoUpdater.on('update-downloaded', (info) => {
     updateReady = true;
-    if (tray) tray.displayBalloon({
-      iconType: 'info',
-      title: 'Lumshot',
-      content: 'Update ready — click here to restart and install (or it installs on next restart).',
-    });
+    const latest = info && info.version ? `v${info.version}` : null;
+    const current = `v${app.getVersion()}`;
+    if (editorWindow && !editorWindow.isDestroyed()) {
+      // Primary path: in-app toast inside the Lumshot window.
+      editorWindow.webContents.send('update:ready', { current, latest: latest || current });
+    } else if (tray) {
+      // Fallback: no editor window to show the toast in (e.g. tray-only) —
+      // the balloon still lets the user install without opening the app.
+      tray.displayBalloon({
+        iconType: 'info',
+        title: 'Lumshot',
+        content: 'Update ready — click here to restart and install (or it installs on next restart).',
+      });
+    }
   });
 
   // Never show an error dialog — just log to the console.

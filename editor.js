@@ -15,6 +15,8 @@ const toolbarStack  = document.getElementById('annotation-bar');
 const annProps      = document.getElementById('tool-props');
 const annPropsWrap  = document.getElementById('tool-props-wrap');
 const abTools       = document.getElementById('ab-tools');
+const tbarLeft      = document.querySelector('#annotation-bar .tbar-left');
+const tbarRight     = document.querySelector('#annotation-bar .tbar-right');
 const canvasArea    = document.getElementById('canvas-area');
 const dragOutHandle = document.getElementById('drag-out-handle');
 const textInput     = document.getElementById('text-input');
@@ -300,6 +302,36 @@ let editingId = null;     // id of annotation hidden while it's being edited
 let view = { ox: 0, oy: 0, iw: 0, ih: 0, totalW: 0, annScale: 1, titleBarH: 0 };
 let suppressUI = false;   // when true, selection handles are not drawn (for export)
 
+// ─── Annotation / watermark auto-scale ──────────────────────────────────────
+// Every tool's default size is authored in "design px" and multiplied by this
+// scale at draw time, so a new annotation is naturally proportioned to the image
+// instead of a fixed pixel size that looks tiny on large shots and huge on tiny
+// ones. The scale is the image's padded width divided by a REFERENCE width: at
+// exactly the reference the defaults render at their authored baseline; larger
+// images scale up, smaller ones down (never below the floor).
+//
+// The reference was 1000px, but typical screenshots are narrower than that, so
+// every default was being scaled DOWN and read too small — users had to bump the
+// size on almost every annotation. Lowering it to 640 (a common screenshot
+// width) makes the baselines land right for the everyday case, and raising the
+// floor keeps even small crops from collapsing the defaults to nothing. The
+// watermark shares the same reference (see drawWatermark) so it tracks in step.
+//
+// Growth is capped with a SOFT CEILING: below the reference the scale is linear
+// (small/medium images get exactly the corrected size), but the portion ABOVE
+// 1.0 is compressed to 60%, so very large shots (e.g. 2400px+) don't get
+// oversized, heavy-looking defaults. A big image still gets larger annotations
+// than a small one — just with diminishing growth rather than a straight 1.56×
+// blow-up of the old proportions.
+const ANN_SCALE_REF    = 640;  // px — image width at which defaults hit their authored size
+const ANN_SCALE_FLOOR  = 0.85; // never shrink defaults below this, however small the image
+const ANN_SCALE_GROWTH = 0.6;  // compression applied to the part of the scale above 1.0
+function computeAnnScale(paddedWidth) {
+  const raw = paddedWidth / ANN_SCALE_REF;
+  const eased = raw > 1 ? 1 + (raw - 1) * ANN_SCALE_GROWTH : raw;
+  return Math.max(ANN_SCALE_FLOOR, eased);
+}
+
 // ─── OCR Mode state ─────────────────────────────────────────────────────────────
 // Per-tab (mirrored via saveLiveStateToTab/loadTabIntoLive); see the OCR Mode
 // section near the end of the file for the behaviour.
@@ -378,38 +410,81 @@ window.addEventListener('resize', () => {
 });
 
 // ─── Responsive toolbar position ────────────────────────────────────────────
-// The tool palette (#ab-tools) is centered on the CANVAS area on wide windows,
-// then slides left as the window narrows so the Tool Properties panel (which
-// sits immediately to its right) keeps enough room instead of being squeezed —
-// even though there's unused space on the left. "Centered on the canvas" means
-// the palette's own visual center aligns with the center of #canvas-area (the
-// live canvas region, whatever the sidebar state), NOT the whole window or the
-// combined toolbar+props width.
+// The tool palette (#ab-tools) sits in the toolbar's middle section — the space
+// between the left cluster (.tbar-left: New/Open) and the right cluster
+// (.tbar-right: Undo/Redo/BG/Copy/Save). Its horizontal position is a pure
+// function of window width (never of the active tool / props-panel width) and
+// behaves in two phases:
 //
-// Implementation: set #ab-tools' margin-left to place its center at the canvas
-// center, clamped to a minimum so it never goes flush-left. On narrow windows
-// the ideal centered margin drops below that minimum and the clamp takes over —
-// which is exactly the "shift left to preserve properties room" behavior. The
-// CSS transition on margin-left (editor.html) makes the movement smooth.
-const TOOLBAR_MIN_MARGIN = 32; // px — never tighter than this gap from the left cluster
+//   • Wide windows  → the palette is centered BY ITSELF in the cluster gap,
+//     with equal slack on both sides (symmetric). The Tool Properties panel just
+//     fills whatever room remains to its right; it does not pull the palette off
+//     centre.
+//   • As the window narrows → once the symmetric-centre position would leave the
+//     palette's right edge closer than TOOLBAR_PROPS_MARGIN to the right cluster
+//     (i.e. the props panel would lose its room), the palette stops centring and
+//     shifts LEFT to preserve that gap, reaching TOOLBAR_MIN_MARGIN (32px) at the
+//     minimum window width.
+//
+// Implemented as `min(centreMargin, capMargin)` clamped to the floor, where
+// capMargin is the largest margin that still keeps a TOOLBAR_PROPS_MARGIN gap to
+// the right cluster. On wide windows centreMargin is the smaller of the two, so
+// the palette is symmetric; on narrow windows the cap wins and drives the shift.
+// The two meet smoothly at the crossover (no jump). All inputs are window/bar
+// geometry + the clusters' fixed widths — see the margin-pollution note below —
+// so the CSS margin-left transition (editor.html) animates every resize cleanly.
+const TOOLBAR_MIN_MARGIN   = 32;  // px — left floor: reached at the minimum window width
+const TOOLBAR_PROPS_MARGIN = 200; // px — right gap kept for the props panel once the window is tight
 function positionToolbar() {
   // Only meaningful while the toolbar row is actually laid out (it's hidden in
   // the empty/no-image state, where getBoundingClientRect would read zeros).
   if (!abTools || document.body.classList.contains('no-image')) return;
-  const area = canvasArea.getBoundingClientRect();
-  if (area.width === 0) return;
   const toolsW = abTools.getBoundingClientRect().width;
   if (toolsW === 0) return;
-  // Fixed left offset of #ab-tools within the bar, independent of its margin
-  // (= bar padding-left + the New/Open cluster width): its current on-screen
-  // left minus its current margin-left.
-  const curMargin = parseFloat(getComputedStyle(abTools).marginLeft) || 0;
-  const fixedLeft = abTools.getBoundingClientRect().left - curMargin;
-  // Center of the canvas area, in the same (window-left = 0) coordinate space
-  // the bar uses — #annotation-bar and #canvas-area share that origin.
-  const canvasCenter = area.left + area.width / 2;
-  const idealMargin = canvasCenter - toolsW / 2 - fixedLeft;
-  const margin = Math.max(TOOLBAR_MIN_MARGIN, idealMargin);
+  const barRect   = toolbarStack.getBoundingClientRect();
+  const barStyle  = getComputedStyle(toolbarStack);
+  const padLeft   = parseFloat(barStyle.paddingLeft)  || 0;
+  const padRight  = parseFloat(barStyle.paddingRight) || 0;
+  const leftRect  = tbarLeft  && tbarLeft.getBoundingClientRect();
+  const rightRect = tbarRight && tbarRight.getBoundingClientRect();
+  // Both bounds must be derived ONLY from the window/bar geometry and the two
+  // clusters' WIDTHS — never from anything whose on-screen POSITION depends on
+  // #ab-tools' own margin, or we get a feedback loop that leaves the palette
+  // stuck centered after a maximize→restore:
+  //
+  //   The bar is [ .tbar-left | #ab-tools (margin M) | #tool-props (shrink) |
+  //   .tbar-right (margin-left:auto, fixed 301px) ]. When the window restores to
+  //   a narrow width while #ab-tools still carries its large *maximized* margin M,
+  //   the row's fixed content overflows, margin-left:auto collapses, and
+  //   .tbar-right is PUSHED right — so its measured .left reads as if the window
+  //   were still wide. Feeding that back in recomputes another large margin, and
+  //   the palette never returns left. So we compute .tbar-right's left edge from
+  //   the bar's right edge minus padding minus the cluster's (stable) width
+  //   instead of trusting its margin-polluted measured position. Likewise the
+  //   left cluster's right edge = bar-left + padding + its width.
+  let margin;
+  if (leftRect && rightRect && leftRect.width && rightRect.width) {
+    const leftEdge  = barRect.left  + padLeft  + leftRect.width;   // .tbar-left right edge
+    const rightEdge = barRect.right - padRight - rightRect.width;  // .tbar-right left edge
+    // Phase 1 — symmetric centre in the cluster gap.
+    const centreMargin = (leftEdge + rightEdge) / 2 - toolsW / 2 - leftEdge;
+    // Phase 2 — cap that keeps a TOOLBAR_PROPS_MARGIN gap to the right cluster,
+    // so as the window narrows the palette shifts left instead of crowding the
+    // props panel. On wide windows centreMargin is the smaller of the two (→
+    // symmetric); on narrow windows this cap wins (→ shift left). They meet
+    // smoothly at the crossover, so there's no jump.
+    const capMargin = rightEdge - leftEdge - toolsW - TOOLBAR_PROPS_MARGIN;
+    margin = Math.max(TOOLBAR_MIN_MARGIN, Math.min(centreMargin, capMargin));
+  } else {
+    // Fall back to centring the palette on the canvas area if either cluster
+    // isn't laid out yet. leftEdge from the bar's own padding, not #ab-tools'
+    // live (possibly animating) geometry — same margin-pollution reason as above.
+    const area = canvasArea.getBoundingClientRect();
+    if (area.width === 0) return;
+    const leftEdge = barRect.left + padLeft + (leftRect ? leftRect.width : 0);
+    const canvasCentre = area.left + area.width / 2;
+    margin = Math.max(TOOLBAR_MIN_MARGIN, canvasCentre - toolsW / 2 - leftEdge);
+  }
   abTools.style.marginLeft = margin + 'px';
   // First placement is applied WITHOUT the CSS transition (the .toolbar-ready
   // gate in editor.html is still off), so the palette renders directly at its
@@ -1111,7 +1186,7 @@ function render() {
   view = {
     ox: cardX - balX, oy: cardY + titleBarH - balY,
     iw, ih, totalW,
-    annScale: Math.max(0.5, (iw + s.padding * 2) / 1000),
+    annScale: computeAnnScale(iw + s.padding * 2),
     titleBarH,
   };
 
@@ -1224,7 +1299,7 @@ function renderCropMode() {
   // Match the non-crop annotation scale so annotations don't jump size on enter/exit.
   const s = getSettings();
   const pad = (backgroundEnabled && !ocrModeActive) ? s.padding : 0;
-  view = { ox, oy, iw, ih, totalW, annScale: Math.max(0.5, (iw + pad * 2) / 1000), titleBarH: 0 };
+  view = { ox, oy, iw, ih, totalW, annScale: computeAnnScale(iw + pad * 2), titleBarH: 0 };
 
   // Backing resolution: full-res for explicit zoom, capped to the pane in fit mode.
   const dpr = window.devicePixelRatio || 1;
@@ -2430,7 +2505,8 @@ function commitAndDismiss() {
 // mousedown handles in-image selection), the tool buttons (they toggle tools),
 // the property panel and colour picker (being edited), the Advanced Properties
 // sidebar section (same category as the toolbar's own property panel — just
-// relocated — see [[advanced-properties-redesign]]), and open modals.
+// relocated — see [[advanced-properties-redesign]]), the title bar (window
+// management — see below), and open modals.
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   if (!screenshotImg || editing) return;
@@ -2442,6 +2518,13 @@ document.addEventListener('mousedown', (e) => {
         t.closest('#color-picker-popover') ||
         t.closest('#adv-props-section') ||
         t.closest('.tool-btn[data-tool]') ||
+        // The title bar is window-management chrome (logo/menu/tabs/theme + the
+        // min/max/close controls), NOT part of the editing surface. Its drag
+        // region doesn't emit DOM mouse events, but its no-drag buttons do —
+        // clicking Maximize/Restore (a resize) would otherwise commit & deselect
+        // the active tool, which broke the workflow: resizing the window must
+        // never reset the tool or hide its Basic/Advanced Properties.
+        t.closest('#titlebar') ||
         t.closest('.sp-overlay'))) return;
   commitAndDismiss();
 }, true);
@@ -3768,10 +3851,10 @@ window.addEventListener('mousemove', (e) => {
     if (draft.type === 'arrow' || draft.type === 'line' || draft.type === 'highlight') {
       draft.fx2 = fx; draft.fy2 = fy;
     } else {
-      draft.fx = Math.min(draft._ox, fx);
-      draft.fy = Math.min(draft._oy, fy);
-      draft.fw = Math.abs(fx - draft._ox);
-      draft.fh = Math.abs(fy - draft._oy);
+      // Remember the raw cursor so a Shift press/release with no pointer movement
+      // can re-run the box math (see the Shift key listeners below).
+      draft._cx = fx; draft._cy = fy;
+      updateCreateBox(e.shiftKey);
     }
     scheduleRender();
   } else if (mode === 'move' && dragInfo) {
@@ -3790,6 +3873,46 @@ window.addEventListener('mousemove', (e) => {
     }
   }
 });
+
+// Recompute the in-progress box shape (rect/ellipse/blur) from its anchor
+// (_ox/_oy) to the last cursor (_cx/_cy). When `square` is true the box is
+// constrained to equal on-screen width/height — a perfect square (Rectangle) or
+// circle (Circle), the standard Shift-to-constrain behavior.
+//
+// The 1:1 constraint MUST be computed in pixel space, not in the fractional
+// fx/fy coordinates: fw/fh are fractions of the image's width/height, and those
+// two axes have different pixel scales (nx = fx*iw, ny = fy*ih). Equalizing the
+// *fractions* would give a box of side*iw by side*ih px — a shape stretched to
+// the image's aspect ratio, not a square. So convert the drag deltas to pixels,
+// equalize there, then divide each axis back by its own scale so the final
+// fw*iw === fh*ih (a true 1:1 pixel box) for any image/zoom/viewport. Signs are
+// preserved per axis so the box always grows toward the cursor from the anchor.
+function updateCreateBox(square) {
+  if (!draft || draft._cx === undefined) return;
+  let dx = draft._cx - draft._ox;
+  let dy = draft._cy - draft._oy;
+  if (square) {
+    const pxSide = Math.max(Math.abs(dx) * view.iw, Math.abs(dy) * view.ih);
+    dx = Math.sign(dx) * (pxSide / view.iw);
+    dy = Math.sign(dy) * (pxSide / view.ih);
+  }
+  draft.fx = Math.min(draft._ox, draft._ox + dx);
+  draft.fy = Math.min(draft._oy, draft._oy + dy);
+  draft.fw = Math.abs(dx);
+  draft.fh = Math.abs(dy);
+}
+
+// Shift pressed/released mid-drag with no pointer movement still needs to
+// apply/release the square constraint live, so react to the key itself too.
+// Only relevant while a box shape is being drawn (mode 'create', box draft).
+function onShiftConstrain(e) {
+  if (e.key !== 'Shift') return;
+  if (mode !== 'create' || !draft || draft._cx === undefined) return;
+  updateCreateBox(e.shiftKey);
+  scheduleRender();
+}
+window.addEventListener('keydown', onShiftConstrain);
+window.addEventListener('keyup', onShiftConstrain);
 
 window.addEventListener('mouseup', () => {
   if (mode === 'crop-resize' || mode === 'crop-move') {
@@ -3823,7 +3946,7 @@ window.addEventListener('mouseup', () => {
       : (nx(draft.fw) > 6 && ny(draft.fh) > 6);
     if (ok) {
       pushHistory();
-      delete draft._ox; delete draft._oy;
+      delete draft._ox; delete draft._oy; delete draft._cx; delete draft._cy;
       annotations.push(draft);
       editTargetId = draft.id; // stays the soft edit target until the tool switches
       const justDrew = draft;
@@ -4387,6 +4510,13 @@ const btnMaximize = document.getElementById('btn-maximize');
 btnMaximize.addEventListener('click', () => window.electronAPI.maximizeWindow());
 window.electronAPI.onWindowMaximized((isMaximized) => {
   btnMaximize.classList.toggle('maximized', isMaximized);
+  // Recalculate the toolbar position on the exact maximize/restore transition,
+  // in addition to the window 'resize' handler. This is an authoritative signal
+  // straight from main.js (window.on('maximize'/'unmaximize')), so it fires even
+  // if a resize event's timing is unreliable across the state change. Deferred a
+  // frame so the flex row has finished re-laying out at the new window width
+  // before we measure it.
+  requestAnimationFrame(positionToolbar);
 });
 
 // ─── Text input overlay ─────────────────────────────────────────────────────────
@@ -4597,6 +4727,15 @@ document.addEventListener('keydown', (e) => {
     if (ocrModeActive) { exitOcrMode(); return; }
     selectedId = null;
     setActiveTool(null);
+    return;
+  }
+
+  // Enter confirms an active crop selection — same action as the Apply button, so
+  // mouse and keyboard stay in sync (both call applyCrop). Only while the Crop
+  // tool is active with a valid selection, and never while typing in a field.
+  if (e.key === 'Enter' && !typingInField && activeTool === 'crop' && cropRect) {
+    e.preventDefault();
+    applyCrop();
     return;
   }
 
@@ -5263,7 +5402,11 @@ function computeWatermark() {
 // any preview zoom and at export.
 function drawWatermark(wm) {
   const cw = canvas.width / previewScale, ch = canvas.height / previewScale;
-  const scale = Math.max(0.6, cw / 1000); // scale relative to the image's logical width
+  // Same reference + floor as annotations (computeAnnScale) so the watermark
+  // tracks the image in step with everything else. cw here is the padded card
+  // width (the composite's logical width), which matches the (iw + padding·2)
+  // the annotation scale is keyed to.
+  const scale = computeAnnScale(cw);
 
   const SIZE_PX = { small: 10, medium: 13, large: 18 };
   const fontPx  = Math.round((SIZE_PX[wm.size] || 13) * scale);
@@ -5507,12 +5650,13 @@ PRESETS.forEach((p, i) => {
   spPresetEl.appendChild(opt);
 });
 
-// ─── Non-settings modals (Capture History, OCR "Create Note") ──────────────────
-// These still use the original centred-modal chrome; the settings-family
-// modals above were retired in favour of the full-page #settings-page below.
-const spHistoryOverlay  = document.getElementById('history-overlay');
+// ─── Non-settings modals (OCR "Create Note") ────────────────────────────────
+// Still uses the original centred-modal chrome; the settings-family modals
+// above were retired in favour of the full-page #settings-page below, and
+// Capture History moved into its own sidebar (#history-controls, see
+// enterHistoryMode/exitHistoryMode) rather than a modal.
 const spOcrNoteOverlay  = document.getElementById('ocr-note-overlay');
-const spOverlays = [spHistoryOverlay, spOcrNoteOverlay];
+const spOverlays = [spOcrNoteOverlay];
 
 function openModal(overlay) {
   spOverlays.forEach(o => o.classList.remove('open')); // only one at a time
@@ -5538,6 +5682,35 @@ document.addEventListener('keydown', (e) => {
     closeModals();
   }
 }, true);
+
+// ─── Update-ready toast ──────────────────────────────────────────────────────
+// Non-blocking — docked bottom-right, no scrim, canvas stays interactive.
+// Main sends this once an update has finished downloading. The tray balloon
+// remains as a fallback for when the editor window doesn't exist yet.
+const updateToast = document.getElementById('update-toast');
+let updateToastShowRaf = null;
+
+function showUpdateToast({ current, latest }) {
+  document.getElementById('update-toast-message').textContent =
+    `${latest} is ready. You're on ${current}. Update for the latest features and fixes.`;
+  updateToast.classList.add('visible');
+  cancelAnimationFrame(updateToastShowRaf);
+  // Force layout before adding .shown so the slide/fade transition runs
+  // instead of the toast just appearing already in its end state.
+  updateToast.offsetHeight;
+  updateToastShowRaf = requestAnimationFrame(() => updateToast.classList.add('shown'));
+}
+function hideUpdateToast() {
+  updateToast.classList.remove('shown');
+  setTimeout(() => updateToast.classList.remove('visible'), 200); // matches CSS transition
+}
+
+window.electronAPI.onUpdateReady(showUpdateToast);
+document.getElementById('update-toast-install').addEventListener('click', () => {
+  window.electronAPI.installUpdate();
+});
+document.getElementById('update-toast-later').addEventListener('click', hideUpdateToast);
+document.getElementById('update-toast-close').addEventListener('click', hideUpdateToast);
 
 // ─── Settings page: tabs + About sub-views ──────────────────────────────────────
 const STG_TABS = {
@@ -6335,25 +6508,48 @@ function relativeTime(ts) {
   return d + 'd ago';
 }
 
-async function openHistoryPanel() {
-  openModal(spHistoryOverlay);
-  const body = document.getElementById('history-body');
-  body.innerHTML = '<div class="hist-empty">Loading…</div>';
+// History Mode is a sidebar swap, the same pattern as OCR Mode (see
+// enterOcrMode/exitOcrMode): #controls (or #ocr-controls) is hidden and
+// #history-controls takes its place via body.history-mode. Since #controls'
+// own visibility is driven entirely by the no-image/bg-off/ocr-mode classes
+// (untouched here), simply removing history-mode on exit naturally restores
+// whatever was showing before — no separate "was it visible" flag needed.
+let historyModeActive = false;
+const historySbBody = document.getElementById('history-sb-body');
+
+async function enterHistoryMode() {
+  if (historyModeActive) return;
+  historyModeActive = true;
+  document.body.classList.add('history-mode');
+  positionToolbar(); // sidebar swap → canvas width may have changed (e.g. from the no-image state)
+  await renderHistorySidebar();
+}
+
+function exitHistoryMode() {
+  if (!historyModeActive) return;
+  historyModeActive = false;
+  document.body.classList.remove('history-mode');
+  positionToolbar();
+}
+
+async function renderHistorySidebar() {
+  historySbBody.innerHTML = '<div class="hist-sb-empty">Loading…</div>';
 
   let entries;
   try { entries = await window.electronAPI.getHistoryIndex(); } catch { entries = []; }
 
   if (!entries || !entries.length) {
-    body.innerHTML = '<div class="hist-empty">No captures yet.</div>';
+    historySbBody.innerHTML = '<div class="hist-sb-empty">No captures yet.</div>';
     return;
   }
 
   const grid = document.createElement('div');
-  grid.className = 'hist-grid';
+  grid.className = 'hist-sb-grid';
 
   for (const entry of entries) {
     const item = document.createElement('div');
-    item.className = 'hist-item';
+    item.className = 'hist-sb-item';
+    item.draggable = true;
 
     const img = document.createElement('img');
     img.alt = 'Capture';
@@ -6366,13 +6562,14 @@ async function openHistoryPanel() {
     })();
 
     const info = document.createElement('div');
-    info.className = 'hist-item-info';
+    info.className = 'hist-sb-item-info';
     const timeSpan = document.createElement('span');
     timeSpan.textContent = relativeTime(entry.timestamp);
     const delBtn = document.createElement('button');
-    delBtn.className = 'hist-item-del';
+    delBtn.className = 'hist-sb-item-del';
     delBtn.title = 'Delete';
-    delBtn.textContent = '✕';
+    delBtn.setAttribute('aria-label', 'Delete capture');
+    delBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>';
     info.appendChild(timeSpan);
     info.appendChild(delBtn);
 
@@ -6380,38 +6577,58 @@ async function openHistoryPanel() {
     item.appendChild(info);
     grid.appendChild(item);
 
-    // Load into editor on click (but not the delete button)
+    // Click a thumbnail: open it as a new tab (consistent with every other
+    // history entry point — the launcher's Recents grid and the old modal —
+    // so in-progress annotations on the current tab are never silently lost).
     item.addEventListener('click', async (e) => {
-      if (e.target === delBtn) return;
-      closeModals();
+      if (e.target === delBtn || delBtn.contains(e.target)) return;
       try {
         const dataUrl = await window.electronAPI.loadFromHistory(entry.id);
-        if (dataUrl) {
-          // Re-use the same load path as a regular screenshot
-          const ev = new CustomEvent('load-history-image', { detail: dataUrl });
-          document.dispatchEvent(ev);
-        }
+        if (dataUrl) createTab(dataUrl);
       } catch { /* ignore */ }
+    });
+
+    // Drag-and-drop: an alternative to clicking, dropped onto the canvas. The
+    // drop handler below resolves the full-res image itself (via entry.id) —
+    // dragstart just needs to identify which entry is being dragged.
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('application/x-lumshot-history-id', entry.id);
     });
 
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       try { await window.electronAPI.deleteHistoryEntry(entry.id); } catch { /* ignore */ }
       item.remove();
-      if (!grid.children.length) body.innerHTML = '<div class="hist-empty">No captures yet.</div>';
+      if (!grid.children.length) historySbBody.innerHTML = '<div class="hist-sb-empty">No captures yet.</div>';
     });
   }
 
-  body.innerHTML = '';
-  body.appendChild(grid);
+  historySbBody.innerHTML = '';
+  historySbBody.appendChild(grid);
 }
 
-document.addEventListener('load-history-image', (e) => {
-  // A history capture opens as a new tab, just like a fresh capture.
-  createTab(e.detail);
+document.getElementById('history-sb-close').addEventListener('click', exitHistoryMode);
+
+// Canvas-area drop target for dragging a history thumbnail onto the canvas.
+canvasArea.addEventListener('dragover', (e) => {
+  if (!historyModeActive) return;
+  if (!e.dataTransfer.types.includes('application/x-lumshot-history-id')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+canvasArea.addEventListener('drop', async (e) => {
+  if (!historyModeActive) return;
+  const id = e.dataTransfer.getData('application/x-lumshot-history-id');
+  if (!id) return;
+  e.preventDefault();
+  try {
+    const dataUrl = await window.electronAPI.loadFromHistory(id);
+    if (dataUrl) createTab(dataUrl);
+  } catch { /* ignore */ }
 });
 
-window.electronAPI.onMenuOpenHistory(() => openHistoryPanel());
+window.electronAPI.onMenuOpenHistory(() => enterHistoryMode());
 
 // ═══ Launcher (empty state) ══════════════════════════════════════════════════════
 // The empty editor (no image loaded) shows a launcher: four capture-action cards
