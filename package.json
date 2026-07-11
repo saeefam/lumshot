@@ -1,0 +1,95 @@
+{
+  "name": "lumshot",
+  "version": "1.0.0",
+  "description": "Lumshot — screenshot beautifier for Windows",
+  "main": "main.js",
+  "scripts": {
+    "start": "node run.js",
+    "icons": "node generate-icons.js",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "build": {
+    "appId": "com.lumshot.app",
+    "productName": "Lumshot",
+    "compression": "maximum",
+    "removePackageScripts": true,
+    "afterPack": "build-afterpack.js",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Lumshot-Setup-${version}.${ext}"
+    },
+    "asarUnpack": [
+      "assets/ocr/**",
+      "screenshot.ps1",
+      "focushelper.ps1"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "license.js",
+      "settings.js",
+      "store.js",
+      "aiPaste.js",
+      "captureHistory.js",
+      "secrets.js",
+      "config.js",
+      "presets.js",
+      "theme.css",
+      "editor.html",
+      "editor.js",
+      "overlay.html",
+      "overlay.js",
+      "pin.html",
+      "pin.js",
+      "toast.html",
+      "toast.js",
+      "scroll.html",
+      "scrollhelper.ps1",
+      "screenshot.ps1",
+      "focushelper.ps1",
+      "windowPicker.html",
+      "package.json",
+      "assets/**/*",
+      "!assets/icons/phosphor/**",
+      "!**/*.map",
+      "!**/node_modules/**/*.{ts,d.ts,map,md,markdown}",
+      "!**/node_modules/**/{LICENSE,LICENSE.txt,license,license.md,LICENSE.md,CHANGELOG.md,README,README.md,readme.md,.editorconfig,.nvmrc,.npmignore,.eslintrc,.eslintrc.yml,.eslintrc.json,.prettierrc,.travis.yml,tsconfig.json,.runkit_example.js}",
+      "!**/node_modules/**/{test,tests,__tests__,example,examples,docs,doc,.github,.vscode}/**"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "saeefam",
+      "repo": "lumshot"
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.35.1",
+    "tesseract.js": "^7.0.0"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9"
+  }
+}

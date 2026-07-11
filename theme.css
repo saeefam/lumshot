@@ -1,0 +1,91 @@
+/* ============================================================================
+   Lumshot — Brand color tokens (single source of truth)
+   ----------------------------------------------------------------------------
+   The entire app's accent/brand color is driven from the few --brand-* values
+   below. Every window (editor, overlay, scroll, window picker) links this file
+   and consumes the derived --accent* tokens, so no component hardcodes the
+   color. Change the brand here once and it updates everywhere.
+
+   Each brand block defines:
+     --brand / --brand-rgb   the core accent (fills, borders, rings)
+     --brand-hover/-press    interaction states
+     --brand-grad-2          second stop of the one permitted gradient
+     --brand-ink             text/icon color ON accent fills (contrast-safe)
+     --brand-deep            accent used AS text on light surfaces (light theme)
+
+   >>> BRAND EXPERIMENT: teal (#21D2BB) <<<
+   To revert to the previous violet (or the original purple), comment out the
+   "Experimental teal" block and uncomment the block you want. Nothing else
+   changes. Note: teal is a light color, so it pairs with dark ink on accent
+   fills (--brand-ink); the purple/violet blocks pair with white ink.
+   ============================================================================ */
+:root {
+  /* ---- Original purple (default brand — uncomment this block to revert) ----
+  --brand:        #6E56F7;
+  --brand-rgb:    110, 86, 247;
+  --brand-hover:  #7F69FF;
+  --brand-press:  #5E47E0;
+  --brand-grad-2: #9E5BF5;
+  --brand-ink:    #FFFFFF;
+  --brand-deep:   #5E47E0;
+  -------------------------------------------------------------------------- */
+
+  /* ---- Previous experiment: violet (uncomment this block to revert) ----
+  --brand:        #7B5CFF;
+  --brand-rgb:    123, 92, 255;
+  --brand-hover:  #8E72FF;
+  --brand-press:  #6A4AE6;
+  --brand-grad-2: #AC6BFF;
+  --brand-ink:    #FFFFFF;
+  --brand-deep:   #6A4AE6;
+  -------------------------------------------------------------------------- */
+
+  /* ---- Previous experiment: teal (uncomment this block to revert) ----
+  --brand:        #21D2BB;
+  --brand-rgb:    33, 210, 187;
+  --brand-hover:  #3BE3CC;
+  --brand-press:  #1AB39E;
+  --brand-grad-2: #36C6E2;
+  --brand-ink:    #04312B;
+  --brand-deep:   #0F7A6C;
+  -------------------------------------------------------------------------- */
+
+  /* ---- Precision mint (active — LumShot Design System §1 accent) ----
+     Values reconciled to the Design System's §1.1/§1.2 --accent exactly:
+     dark #2ee6b6, light #10b488 (accent-deep). Hover/press are derived a
+     shade lighter/darker from each so the interaction ladder in §23 holds. */
+  --brand:        #2EE6B6;
+  --brand-rgb:    46, 230, 182;
+  --brand-hover:  #52EAC4;
+  --brand-press:  #22C79B;
+  --brand-grad-2: #2EE6B6;   /* flat — the redesign uses no gradients */
+  --brand-ink:    #04241B;   /* dark ink on the mint fill (design --accent-ink) */
+  --brand-deep:   #10B488;   /* design's light-theme accent — accent-as-text on light */
+
+  /* ---- Derived accent tokens (do not edit — sourced from --brand above) ---- */
+  --accent:       var(--brand);
+  --accent-hover: var(--brand-hover);
+  --accent-press: var(--brand-press);
+  --accent-tint:  rgba(var(--brand-rgb), 0.14);
+  --accent-ring:  rgba(var(--brand-rgb), 0.45);
+  --accent-soft:  rgba(var(--brand-rgb), 0.92);
+  --on-accent:    var(--brand-ink);
+  --accent-text:  var(--brand-hover);
+
+  /* The single permitted gradient — export button only */
+  --export-grad:  linear-gradient(135deg, var(--brand), var(--brand-grad-2));
+}
+
+/* Light theme: the design pairs light surfaces with the deeper mint
+   (#10B488, design system §1.2 --accent) as the actual accent — fills,
+   rings and text — with white ink, because the bright mint doesn't carry
+   enough contrast on white. */
+:root.light {
+  --brand-rgb:    16, 180, 136;
+  --accent:       var(--brand-deep);
+  --accent-hover: #14C89A;
+  --accent-press: #0D9670;
+  --on-accent:    #FFFFFF;
+  --accent-text:  var(--brand-deep);
+  --export-grad:  linear-gradient(135deg, var(--brand-deep), var(--brand-deep));
+}

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html class="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>Select a Window</title>
+
+  <script>
+    try {
+      var t = localStorage.getItem('lumshot-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.className = t;
+    } catch (e) { /* keep the default dark class */ }
+  </script>
+
+  <!-- Brand/accent color tokens live here (single source of truth). -->
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* Same bundled fonts as editor.html — no remote font fetch, so this
+       window stays consistent and offline-capable like the rest of the app. */
+    @font-face {
+      font-family: 'Instrument Sans';
+      src: url('assets/fonts/InstrumentSans-var.woff2') format('woff2');
+      font-weight: 400 700;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    /* Tokens mirror editor.html's :root.dark / :root.light exactly (design
+       system §1) so this window reads as the same app, not a separate one. */
+    :root {
+      --font: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    :root.dark {
+      --bg: #0c0c10;
+      --surface: #161619;
+      --surface-2: #1c1c21;
+      --surface-3: #26262d;
+      --border: rgba(255, 255, 255, 0.07);
+      --border-strong: rgba(255, 255, 255, 0.13);
+      --text: #f2f2f5;
+      --text-2: #a6a6b0;
+    }
+    :root.light {
+      --bg: #e7e7ea;
+      --surface: #ffffff;
+      --surface-2: #f4f4f6;
+      --surface-3: #f8f8fa;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.15);
+      --text: #1a1a20;
+      --text-2: #5c5c66;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    button { line-height: 1; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Header mirrors the design system's section-heading role (§2). */
+    header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.2px; }
+    header p  { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+
+    #grid {
+      flex: 1;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      padding: 16px;
+      align-content: flex-start;
+    }
+    /* Minimal thumb-only scrollbar, §18. */
+    #grid::-webkit-scrollbar { width: 8px; height: 8px; }
+    #grid::-webkit-scrollbar-track { background: transparent; }
+    #grid::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+    #grid::-webkit-scrollbar-thumb:hover { background: var(--text-2); }
+
+    /* Card: contained/canvas-like element, so it takes the larger §5 radius
+       band (radius-xl, 12-14px) rather than a control-sized radius. */
+    .win-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.12s ease, background-color 0.12s ease, transform 0.15s ease-out;
+    }
+    .win-card:hover {
+      border-color: var(--accent);
+      background: var(--surface-2);
+      transform: translateY(-2px);
+    }
+    .win-card:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .win-card img {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      object-fit: cover;
+      display: block;
+      background: var(--surface-2);
+    }
+    .win-card .win-name {
+      padding: 7px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-top: 1px solid var(--border);
+    }
+
+    #empty {
+      flex: 1;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-2);
+      font-size: 13px;
+    }
+
+    footer {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    /* Cancel — plain-text/ghost button per §16's modal-actions convention
+       (no fill, color var(--text-2), since this is the dismissing action). */
+    button {
+      background: transparent;
+      color: var(--text-2);
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      height: 34px;
+      padding: 0 15px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    button:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+    button:active { background: var(--surface-3); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Select a Window</h1>
+    <p>Click a window to capture it.</p>
+  </header>
+
+  <div id="grid" role="list"></div>
+  <div id="empty">No open windows found.</div>
+
+  <footer>
+    <button id="cancel-btn">Cancel</button>
+  </footer>
+
+  <script>
+    // Keep in sync with the editor's theme (menu toggle, OS change) —
+    // matches editor.js's applyTheme/onThemeApply pattern.
+    function applyTheme(t) {
+      document.documentElement.className = t;
+      try { localStorage.setItem('lumshot-theme', t); } catch (e) {}
+    }
+    window.electronAPI.getInitialTheme().then(applyTheme);
+    window.electronAPI.onThemeApply(applyTheme);
+
+    const grid = document.getElementById('grid');
+    const empty = document.getElementById('empty');
+
+    window.electronAPI.onWindowSources((sources) => {
+      if (!sources || !sources.length) {
+        grid.style.display = 'none';
+        empty.style.display = 'flex';
+        return;
+      }
+      sources.forEach((src) => {
+        const card = document.createElement('div');
+        card.className = 'win-card';
+        card.setAttribute('role', 'listitem');
+        card.tabIndex = 0;
+        card.setAttribute('aria-label', `Capture ${src.name}`);
+
+        const img = document.createElement('img');
+        img.src = src.thumbnail;
+        img.alt = '';           // decorative — the card's own aria-label carries the name
+
+        const label = document.createElement('div');
+        label.className = 'win-name';
+        label.textContent = src.name;
+        label.title = src.name;
+
+        card.appendChild(img);
+        card.appendChild(label);
+        card.addEventListener('click', () => window.electronAPI.selectWindowSource(src.id));
+        card.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            window.electronAPI.selectWindowSource(src.id);
+          }
+        });
+        grid.appendChild(card);
+      });
+    });
+
+    document.getElementById('cancel-btn').addEventListener('click', () => {
+      window.electronAPI.cancelWindowPicker();
+    });
+  </script>
+</body>
+</html>

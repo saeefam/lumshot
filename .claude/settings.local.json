@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__claude-in-chrome__computer",
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__claude-in-chrome__read_network_requests",
+      "Bash(cp \"C:/Users/Saeef/Downloads/LumShot-Redesign.dc.html\" \"C:/Users/Saeef/AppData/Local/Temp/claude/G--Lumshot/7096302f-7be1-4f74-9fc7-0ab5a944dad2/scratchpad/LumShot-Redesign.dc.html\" && wc -l \"C:/Users/Saeef/AppData/Local/Temp/claude/G--Lumshot/7096302f-7be1-4f74-9fc7-0ab5a944dad2/scratchpad/LumShot-Redesign.dc.html\")",
+      "Bash(awk '/\\\\/\\\\* latin \\\\*\\\\//{getline; while\\($0 !~ /}/\\){print; getline}}' /tmp/is.css | grep -o \"https[^\\)]*\\\\|font-style: [a-z]*\" ; echo ===; awk '/\\\\/\\\\* latin \\\\*\\\\//{getline; while\\($0 !~ /}/\\){print; getline}}' /tmp/jbm.css | grep -o \"https[^\\)]*\\\\|font-style: [a-z]*\")",
+      "Bash(curl -s -o InstrumentSans-var.woff2 \"https://fonts.gstatic.com/s/instrumentsans/v4/pxiTypc9vsFDm051Uf6KVwgkfoSxQ0GsQv8ToedPibnr0SZe1Q.woff2\")",
+      "Bash(curl -s -o InstrumentSans-Italic-var.woff2 \"https://fonts.gstatic.com/s/instrumentsans/v4/pxitypc9vsFDm051Uf6KVwgkfoSbSnNPooZAN0lInHGpCWNu15GR.woff2\")",
+      "Bash(curl -s -o JetBrainsMono-var.woff2 \"https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbV2o-flEEny0FZhsfKu5WU4xD7OwE.woff2\")",
+      "Bash(sed -i \"s/const EDITOR_BG = { dark: '#0D0D12', light: '#E8E8E8' };/const EDITOR_BG = { dark: '#0C0F11', light: '#E8EBEB' };/\" main.js)",
+      "Bash(sed -i \"s/--bar-bg: #15151B;      \\\\/\\\\* app --surface \\\\*\\\\//--bar-bg: #141819;      \\\\/* app --surface *\\\\//\" overlay.html)",
+      "Bash(sed -i \"s/ctx.fillStyle = '#15151B';/ctx.fillStyle = '#141819';/g\" overlay.js)",
+      "Bash(python -)",
+      "Bash(node run.js)",
+      "Bash(powershell -NoProfile -Command \"Get-Process electron,Lumshot -ErrorAction SilentlyContinue | Select-Object Name,Id,MainWindowTitle | Format-Table -AutoSize\")",
+      "Bash(powershell -NoProfile -Command \"Get-Process electron -ErrorAction SilentlyContinue | Select-Object Id,StartTime | Format-Table -AutoSize; Get-Date\")",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Name electron -Force -ErrorAction SilentlyContinue; Start-Sleep 1; \\(Get-Process electron -ErrorAction SilentlyContinue\\).Count\")",
+      "Bash(powershell -NoProfile -Command \"Get-Process electron -ErrorAction SilentlyContinue | Where-Object MainWindowTitle | Select-Object Id,MainWindowTitle | Format-Table -AutoSize\")",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/Saeef/AppData/Local/Temp/claude/G--Lumshot/7096302f-7be1-4f74-9fc7-0ab5a944dad2/scratchpad/snapscreen.ps1 -OutFile C:/Users/Saeef/AppData/Local/Temp/claude/G--Lumshot/7096302f-7be1-4f74-9fc7-0ab5a944dad2/scratchpad/screen-dark.png)",
+      "Bash(python -c ' *)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File __TRACKED_VAR__/snapscreen.ps1 -OutFile __TRACKED_VAR__/light.png)",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Name electron -Force -ErrorAction SilentlyContinue\")",
+      "Bash(sleep 1)",
+      "Bash(sleep 8)"
+    ]
+  }
+}

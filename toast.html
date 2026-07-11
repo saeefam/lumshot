@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <!-- Brand/accent color tokens (single source of truth). -->
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    /* Same bundled font as the rest of the app — no remote fetch, offline-safe. */
+    @font-face {
+      font-family: 'Instrument Sans';
+      src: url('assets/fonts/InstrumentSans-var.woff2') format('woff2');
+      font-weight: 400 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    /* This is a system-level notification (fires even while the editor is
+       hidden), so — like the capture overlay's pill — it stays a fixed dark
+       chrome rather than theme-switching. Values match spec §1.1 dark
+       exactly: --chrome/#161619 background, --line2 border, --fg text. */
+    #toast {
+      display: flex; align-items: center; gap: 9px;
+      max-width: 440px;
+      background: #161619;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      color: #f2f2f5;
+      padding: 9px 18px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      opacity: 0; transform: translateY(6px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+    #toast.visible { opacity: 1; transform: translateY(0); }
+    #msg { overflow: hidden; text-overflow: ellipsis; }
+    #dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+  </style>
+</head>
+<body>
+  <div id="toast"><span id="dot"></span><span id="msg"></span></div>
+  <script src="toast.js"></script>
+</body>
+</html>
