@@ -59,6 +59,11 @@ const LAUNCHED_SILENTLY = process.argv.includes('--hidden');
 
 const license = require('./license');
 const { POLAR_CHECKOUT_URL } = require('./secrets');
+
+// Beta release: pricing is fully disabled and every feature behaves as if
+// licensed. Nothing in license.js/store.js is touched, so flipping this back
+// to false restores normal pricing behavior everywhere it's checked.
+const BETA_FREE_MODE = true;
 const settings = require('./settings');
 const captureHistory = require('./captureHistory');
 const aiPaste = require('./aiPaste');
@@ -2454,7 +2459,7 @@ function createTray() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const licensed = license.isLicensed();
+  const licensed = BETA_FREE_MODE || license.isLicensed();
 
   const items = [
     { label: 'Open Lumshot', click: () => showEditor() },
@@ -2466,7 +2471,7 @@ function updateTrayMenu() {
     { type: 'separator' },
   ];
 
-  // "Buy Lumshot" only for unlicensed users (hidden once licensed)
+  // "Buy Lumshot" only for unlicensed users (hidden once licensed, and during beta)
   if (!licensed) {
     items.push(
       { label: 'Buy Lumshot', click: () => shell.openExternal(POLAR_CHECKOUT_URL) },

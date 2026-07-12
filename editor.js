@@ -1,5 +1,11 @@
 // editor.js — Lumshot editor renderer
 
+// Beta release: pricing is fully disabled and every feature behaves as if
+// licensed (no export watermark, watermark controls unlocked). The real
+// license system underneath is untouched — flip this back to false to
+// restore normal pricing behavior.
+const BETA_FREE_MODE = true;
+
 // ─── DOM references ────────────────────────────────────────────────────────────
 const canvas        = document.getElementById('canvas');
 const ctx           = canvas.getContext('2d');
@@ -5535,7 +5541,7 @@ function updateExportButtons() {
 }
 
 function applyLicenseState(status) {
-  isLicensed = !!status.licensed;
+  isLicensed = BETA_FREE_MODE || !!status.licensed;
   spApplyLicense(status); // reflect into the settings panel (License + Watermark tab)
   // Licensing decides which watermark computeWatermark() returns (free default vs.
   // the user's custom one vs. none), so refresh the live preview when it changes.
@@ -6123,7 +6129,7 @@ function spSetWmSize(size) {
 
 // ─── License state ─────────────────────────────────────────────────────────────
 function spApplyLicense(status) {
-  isLicensed = !!(status && status.licensed);
+  isLicensed = BETA_FREE_MODE || !!(status && status.licensed);
   // Watermark tab: show the controls when licensed, the locked notice otherwise
   spWmSection.hidden = !isLicensed;
   spWmLocked.hidden  = isLicensed;
@@ -6141,6 +6147,25 @@ function spEscape(s) {
 // Build the License tab contents for the licensed / free state and wire buttons.
 function renderLicenseTab(status) {
   if (!spLicenseBody) return;
+
+  // Beta release: pricing UI is hidden entirely and every feature is unlocked
+  // for free. The license system underneath (license.js, this function's
+  // licensed/unlicensed branches) is untouched — flip BETA_FREE_MODE off to
+  // restore it.
+  if (BETA_FREE_MODE) {
+    spLicenseBody.innerHTML = `
+      <div class="stg-card">
+        <div class="stg-success-top">
+          <div class="stg-success-badge">✓</div>
+          <div style="flex:1;min-width:0;">
+            <div class="stg-success-title">LumShot is free during the beta</div>
+            <div class="stg-success-body">All features, including custom watermarks and export branding removal, are unlocked at no cost while LumShot is in beta. No license needed.</div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
 
   if (status.licensed) {
     spLicenseBody.innerHTML = `
