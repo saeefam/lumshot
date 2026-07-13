@@ -58,6 +58,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Scroll window → main: abandon the scroll capture
   scrollCancel: () => ipcRenderer.send('scroll:cancel'),
 
+  // Editor → main: the basic shell (title bar / toolbar frame / empty canvas)
+  // has painted its first frame. Main shows the window on THIS (fired from a rAF
+  // in editor.html, before editor.js's heavy top-level init runs) instead of
+  // waiting for Chromium's 'ready-to-show', which only fires after all that init
+  // finishes — the ~1.7s startup gap. See createEditorWindow in main.js.
+  signalShellReady: () =>
+    ipcRenderer.send('editor:shell-ready'),
+
   // Editor: receive a cropped screenshot to beautify
   onLoadScreenshot: (cb) =>
     ipcRenderer.on('load-screenshot', (_, data) => cb(data)),

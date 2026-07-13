@@ -102,6 +102,7 @@ const BASE_WEB_PREFERENCES = {
 
 let editorWindow      = null;
 let editorReady       = false;   // editor has painted its first frame (per-creation)
+let editorShown       = false;   // the reveal (show/focus) has run for this window creation
 let editorFocusPending = false;  // showEditor() ran before the first paint — finish on ready
 let overlayWindow     = null;    // persistent, pre-created at startup; shown/hidden per capture
 let overlayVisible    = false;   // true while the region-selection overlay is on screen
@@ -164,6 +165,7 @@ function editorBgColor() {
 
 function createEditorWindow() {
   editorReady = false;
+  editorShown = false;
   editorWindow = new BrowserWindow({
     width: 1140,        // 820 main preview + 320 controls sidebar
     height: 720,
@@ -192,10 +194,23 @@ function createEditorWindow() {
     webPreferences: BASE_WEB_PREFERENCES,
   });
 
-  editorWindow.once('ready-to-show', () => {
+  // Reveal the editor window for the first time (Fix #2). Called by whichever of
+  // two signals arrives first, and made one-shot per window creation by the
+  // editorShown guard:
+  //   • 'editor:shell-ready' — the renderer painted its basic shell (title bar /
+  //     toolbar / empty canvas) and fired this from a rAF BEFORE editor.js's heavy
+  //     top-level init runs. This is the fast path: the window appears as soon as
+  //     the (correctly themed) shell is on screen, and editor.js then hydrates the
+  //     already-visible window. No white/unstyled flash because theme.css + the
+  //     inline theme class are applied before the shell paints.
+  //   • 'ready-to-show' — Chromium's native first-paint event, which only fires
+  //     after editor.js finishes. Kept purely as a FALLBACK so the window can
+  //     still never fail to appear if the IPC signal is ever missed.
+  const revealEditorWindow = (label) => {
     if (!editorWindow || editorWindow.isDestroyed()) return;
-    perf('editor ready-to-show (first paint)');
-    editorReady = true;
+    editorReady = true;                 // safe to show() from now on
+    if (editorShown) return;            // already revealed by the other signal
+    perf(label);
     // A capture that began before the first paint hid the editor on purpose —
     // don't pop it up over the capture overlay; the post-capture flow reshows it.
     if (overlayVisible) return;
@@ -204,13 +219,27 @@ function createEditorWindow() {
     // wins over staying hidden). The window is fully loaded and warm in the tray;
     // it just never gets its first .show() until the user actually asks for it.
     if (LAUNCHED_SILENTLY && !editorFocusPending) return;
+    editorShown = true;
     editorWindow.show();
     if (editorFocusPending) {
       editorFocusPending = false;
       editorWindow.setSkipTaskbar(false);
       editorWindow.focus();
     }
-  });
+  };
+
+  // Fast path: shell painted. The listener is scoped to this window's webContents
+  // id so a stale editor's signal can never reveal a newer window.
+  const shellReadyWcId = editorWindow.webContents.id;
+  const onShellReady = (event) => {
+    if (event.sender.id !== shellReadyWcId) return;
+    ipcMain.removeListener('editor:shell-ready', onShellReady);
+    revealEditorWindow('editor shell-ready (shell painted)');
+  };
+  ipcMain.on('editor:shell-ready', onShellReady);
+
+  // Fallback path: native first paint (fires after editor.js finishes).
+  editorWindow.once('ready-to-show', () => revealEditorWindow('editor ready-to-show (first paint)'));
 
   // Apply the menu for this window. On Windows the bar is hidden (the custom
   // title bar + HTML dropdowns replace it) while accelerators stay active; on
@@ -254,7 +283,12 @@ function createEditorWindow() {
     }
   });
 
-  editorWindow.on('closed', () => { editorWindow = null; editorReady = false; });
+  editorWindow.on('closed', () => {
+    // If the window closed before its shell-ready signal ever fired, the listener
+    // would otherwise leak (it only self-removes on fire).
+    ipcMain.removeListener('editor:shell-ready', onShellReady);
+    editorWindow = null; editorReady = false; editorShown = false;
+  });
 }
 
 // Show + focus the editor, taking it out of "tray-only" state.

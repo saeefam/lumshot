@@ -4505,10 +4505,34 @@
        the window (see initDropZone in editor.js). -->
   <div id="drop-overlay"><div class="drop-pill">Drop to open</div></div>
 
+  <!-- Shell-ready signal (Fix #2): a plain inline script, so it runs DURING
+       parsing — after the whole shell DOM above it exists, but BEFORE the
+       deferred scripts below execute (deferred scripts always run after all
+       in-parse inline scripts). We schedule a rAF: the browser paints the fully
+       styled shell (theme class + theme.css are already applied above, so no
+       white/unthemed flash), then we tell main the shell is on screen. Main
+       shows the window on THIS signal instead of Chromium's 'ready-to-show'
+       (which waits for editor.js's heavy top-level init to finish — the ~1.7s
+       gap). editor.js then hydrates the already-visible shell in the same tick
+       right after. If the bridge/rAF is somehow unavailable, main still falls
+       back to 'ready-to-show', so the window can never fail to appear. -->
+  <script>
+    requestAnimationFrame(() => {
+      try { window.electronAPI && window.electronAPI.signalShellReady && window.electronAPI.signalShellReady(); }
+      catch (e) { /* main falls back to ready-to-show */ }
+    });
+  </script>
+
   <!-- tesseract.min.js is NOT loaded here — it's injected lazily on first OCR use
        (see loadTesseractLib in editor.js) so it never costs anything at launch. -->
-  <script src="config.js"></script>
-  <script src="presets.js"></script>
-  <script src="editor.js"></script>
+  <!-- defer: let the HTML parser finish building the DOM before it's blocked on
+       parsing/executing these scripts. Deferred scripts still run in document
+       order (config → presets → editor) and complete just before
+       DOMContentLoaded, after the full DOM exists — so editor.js's top-level
+       element lookups and its `const PRESETS = window.LUMSHOT_PRESETS` (which
+       depends on presets.js having run) both still resolve correctly. -->
+  <script defer src="config.js"></script>
+  <script defer src="presets.js"></script>
+  <script defer src="editor.js"></script>
 </body>
 </html>
