@@ -46,12 +46,6 @@ const annColors      = document.getElementById('ann-colors');
 const annShapeOpts   = document.getElementById('ann-shape-opts');
 const annCropOpts    = document.getElementById('ann-crop-opts');
 const annArrowOpts   = document.getElementById('ann-arrow-opts');
-// Shape-type picker (merged Shape tool: Line / Rectangle / Circle). Selects by
-// [data-shape] rather than a class so it picks up BOTH instances — the
-// toolbar's compact icon buttons (.shapetype-btn) and the Advanced Properties
-// segmented control (.seg-btn) — under one shared active-state/click wiring.
-const annShapeTypeOpts = document.getElementById('ann-shapetype-opts');
-const shapeTypeBtns    = Array.from(document.querySelectorAll('[data-shape]'));
 const cropCancelEl   = document.getElementById('crop-cancel');
 const cropConfirmEl  = document.getElementById('crop-confirm');
 // Advanced Properties (right sidebar) — always the first section, body swaps per tool.
@@ -342,8 +336,21 @@ function computeAnnScale(paddedWidth) {
 // Per-tab (mirrored via saveLiveStateToTab/loadTabIntoLive); see the OCR Mode
 // section near the end of the file for the behaviour.
 let ocrModeActive  = false;  // is the active tab showing the inline text layer
-let ocrData        = null;   // { img, lines:[{text,x0,y0,x1,y1}], confidence }
+let ocrData        = null;   // { img, lines:[{text,x0,y0,x1,y1}] }
 let ocrSearchActive = false; // find bar visible
+
+// ─── Report Mode state ──────────────────────────────────────────────────────────
+// Per-tab (mirrored via saveLiveStateToTab/loadTabIntoLive); see the Report Mode
+// section near the end of the file for the behaviour. reportData is the tab's
+// ticket document: { img, title, desc, meta, titleDirty, descDirty } — the dirty
+// flags make user edits sticky, so a re-scan never clobbers an edited field.
+let reportModeActive = false;
+let reportData       = null;
+// Report Mode shows the raw screenshot by default (like OCR Mode) — a Jira
+// attachment wants the capture, not the decorative background. Unlike OCR's
+// hard suppression, the toolbar BG toggle re-enables it for this mode only
+// (mode-local override; the persisted global setting is untouched).
+let reportBgEnabled  = false;
 
 // PII categories currently live-redacted via the sidebar "Redact sensitive data"
 // section. Per-tab (mirrored through saveLiveStateToTab/loadTabIntoLive). Toggling
@@ -1111,7 +1118,7 @@ function render() {
   // OCR Mode always renders the raw screenshot (no beautify at all) so the text
   // stays pixel-aligned with the original — there's no background concept in OCR.
   // This is independent of the user's Background toggle, which is restored on exit.
-  const bgOn = backgroundEnabled && !ocrModeActive;
+  const bgOn = bgEffective();
 
   // When the background is off (or OCR Mode), strip the beautify treatment so the
   // canvas (and any export) is just the raw screenshot: no padding, rounding,
@@ -1275,6 +1282,10 @@ function render() {
 
   // Keep the OCR text overlay aligned with the (re)positioned image.
   if (ocrModeActive && typeof positionOcrLayer === 'function') positionOcrLayer();
+
+  // Report Mode allows annotating while its sidebar shows an attachment
+  // preview — keep that thumbnail current (debounced; see the Report section).
+  if (reportModeActive && !suppressUI && typeof scheduleReportThumb === 'function') scheduleReportThumb();
 }
 
 // ─── Crop-mode surface ────────────────────────────────────────────────────────
@@ -1304,7 +1315,7 @@ function renderCropMode() {
 
   // Match the non-crop annotation scale so annotations don't jump size on enter/exit.
   const s = getSettings();
-  const pad = (backgroundEnabled && !ocrModeActive) ? s.padding : 0;
+  const pad = bgEffective() ? s.padding : 0;
   view = { ox, oy, iw, ih, totalW, annScale: computeAnnScale(iw + pad * 2), titleBarH: 0 };
 
   // Backing resolution: full-res for explicit zoom, capped to the pane in fit mode.
@@ -2247,13 +2258,11 @@ function setActiveTool(tool) {
   // Highlight the active toolbar button. In the neutral idle state
   // (activeTool === null) no button's data-tool matches, so nothing is
   // highlighted; 'select' is a real, explicitly-chosen tool that lights up its
-  // own button like any other. The merged Shape button owns three tool values
-  // (line/rect/ellipse), so it's highlighted separately below.
+  // own button like any other. Line/Rectangle/Circle are three ordinary tools
+  // with their own buttons, so the generic pass covers them.
   document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === activeTool);
   });
-  const shapeBtn = document.querySelector('.tool-btn[data-tool="shape"]');
-  if (shapeBtn) shapeBtn.classList.toggle('active', isShapeGroupTool(activeTool));
 
   updateTextOptsVisibility();
 
@@ -2280,17 +2289,17 @@ function updateTextOptsVisibility() {
   const showShape = isOn('rect') || isOn('ellipse');
   const showLineShape = isOn('line');   // plain Line only — Arrow has its own panel now
   const showArrow = isOn('arrow');
-  // The shape-type picker belongs to the tool (what to draw next), not to a
-  // placed object — so it shows only while the Shape tool itself is active.
-  const showShapeType = isShapeGroupTool(activeTool);
+  // True while a Line/Rectangle/Circle tool is active with nothing placed yet —
+  // isOn() only covers a live selection, so the Basic panel needs this to appear
+  // for a freshly-picked shape tool (see the showProps gate below).
+  const shapeToolActive = isShapeGroupTool(activeTool);
   const showCounter = isOn('counter');
   const showDraw  = isOn('draw');
   const showHighlight = isOn('highlight');
   const showCrop  = activeTool === 'crop';
 
-  // Line/Rectangle/Circle now share one Basic-properties panel (just the
-  // colour palette) and one Advanced Properties panel (segmented control +
-  // whichever primitive's own controls) — see [[advanced-properties-redesign]].
+  // Line/Rectangle/Circle are three separate tools, but their Basic-properties
+  // panel is the same single colour palette, so one flag still drives it.
   const showShapeAny = showShape || showLineShape;
 
   // Advanced Properties (sidebar) has its own, more forgiving notion of "current
@@ -2311,8 +2320,7 @@ function updateTextOptsVisibility() {
 
   annTextOpts.style.display = showText ? 'flex' : 'none';
   annBlurOpts.style.display = showBlur ? 'flex' : 'none';
-  if (annShapeTypeOpts) annShapeTypeOpts.style.display = showShapeType ? 'flex' : 'none';
-  if (annShapeOpts) annShapeOpts.style.display = showShapeAny ? 'flex' : 'none';
+  if (annShapeOpts) annShapeOpts.style.display = (showShapeAny || shapeToolActive) ? 'flex' : 'none';
   if (annArrowOpts) annArrowOpts.style.display = showArrow ? 'flex' : 'none';
   if (annCounterOpts) annCounterOpts.style.display = showCounter ? 'flex' : 'none';
   if (annDrawOpts)  annDrawOpts.style.display   = showDraw ? 'flex' : 'none';
@@ -2343,17 +2351,11 @@ function updateTextOptsVisibility() {
   if (showDraw  || showDrawAdv)  syncDrawOpts(sel && sel.type === 'draw' ? sel : null);
   if (showHighlight || showHighlightAdv) syncHighlightOpts(sel && sel.type === 'highlight' ? sel : null);
   if (showBlur || showBlurAdv) syncBlurOpts(sel && sel.type === 'blur' ? sel : null);
-  // Broader than showShapeType alone: the Advanced instance of this segmented
-  // control stays visible while a shape is merely selected, or while the
-  // Advanced panel is showing the last Shape tool from idle (see syncShapeTypeSeg
-  // and setAdvPropsBadge's own shapeTool fallback).
-  if (showShapeType || showShapeAny || showShapeAdv) syncShapeTypeSeg();
-
   // The whole tool-props panel appears when any tool needs it. It's an
   // inline flex sibling of #ab-tools/.tbar-right now (not a floating overlay),
   // so no anchoring/positioning math is needed — the bar's own flex layout
   // handles it.
-  const showProps = colourable || showBlur || showCrop || showHighlight || showShapeType;
+  const showProps = colourable || showBlur || showCrop || showHighlight || shapeToolActive;
   annProps.style.display = showProps ? 'flex' : 'none';
   if (annPropsWrap) annPropsWrap.style.display = showProps ? 'block' : 'none';
 
@@ -2433,15 +2435,11 @@ document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
     const t = btn.dataset.tool;
     // Annotation tools act on the image, not the OCR text layer — choosing one
     // while OCR Mode is on leaves OCR Mode first (mirrors how picking a tool
-    // already ends Crop mode below).
+    // already ends Crop mode below). Report Mode is different: annotating the
+    // screenshot (blur, arrows, highlights) is PART of preparing the report, so
+    // tools work with the report sidebar staying put.
     if (ocrModeActive) exitOcrMode();
-    // The merged Shape button maps to three internal tools: toggle it against the
-    // whole group and re-open with the last-used primitive.
-    if (t === 'shape') {
-      setActiveTool(isShapeGroupTool(activeTool) ? null : lastShapeTool);
-      return;
-    }
-    // Every other tool — Select included — toggles: click to choose it, click
+    // Every tool — Select included — toggles: click to choose it, click
     // again to return to the neutral idle state where no tool is highlighted.
     setActiveTool(activeTool === t ? null : t);
   });
@@ -3142,9 +3140,9 @@ syncArrowOpts(null);
 // block — see [[editor-js-tdz-hazard]].
 
 // Which primitive the Advanced panel should show right now: the selected
-// annotation's own type, else whichever the Shape tool is currently set to
-// draw, else the last-used primitive (so the panel shows something sensible
-// even before the Shape tool itself has been clicked this session).
+// annotation's own type, else the active shape tool, else the last-used
+// primitive (so the panel keeps showing that shape's controls after the tool
+// reverts to idle — see lastAdvPropsTool).
 function currentShapeKind(a) {
   if (a) return a.type;
   if (isShapeGroupTool(activeTool)) return activeTool;
@@ -4089,28 +4087,6 @@ function syncDrawOpts(a) {
   if (drawSmoothingVal) drawSmoothingVal.textContent = smPct + '%';
 }
 
-// Highlight the shape-type picker button matching the current primitive, on
-// both instances (toolbar icons + the Advanced Properties segmented control —
-// see shapeTypeBtns above). The toolbar instance is only ever visible while
-// the Shape tool itself is active (activeTool alone decides it), but the
-// Advanced instance stays visible while a line/rect/ellipse is merely
-// selected too — so this reads the selection as a fallback via
-// currentShapeKind, the same helper syncShapeOpts uses.
-function syncShapeTypeSeg() {
-  const sel = editTarget();
-  const shapeSel = sel && (sel.type === 'rect' || sel.type === 'ellipse' || sel.type === 'line') ? sel : null;
-  // Only ever called while a shape's panel is actually showing (see the
-  // showShapeType/showShapeAny/showShapeAdv gate at the call site), so falling
-  // back to lastShapeTool here matches currentShapeKind()'s own fallback — e.g.
-  // idle with the Advanced panel still showing the last-used Shape tool.
-  const kind = isShapeGroupTool(activeTool) ? activeTool : (shapeSel ? shapeSel.type : lastShapeTool);
-  shapeTypeBtns.forEach(b => b.classList.toggle('active', b.dataset.shape === kind));
-}
-// Picking a primitive from either picker switches the Shape tool's draw type.
-shapeTypeBtns.forEach(b => {
-  b.addEventListener('click', () => setActiveTool(b.dataset.shape));
-});
-
 // syncShapeOpts/updateShapeProp for Line/Rectangle/Circle live after the
 // colour-picker-popover section below, alongside the Arrow block — see
 // [[editor-js-tdz-hazard]] for why.
@@ -4707,12 +4683,10 @@ textInput.addEventListener('blur', () => { if (editing) commitText(); });
 // ─── Global keyboard shortcuts ────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (document.activeElement === textInput) return;
-  // Typing in the OCR find box: let the browser handle everything (typing, caret,
-  // native clipboard). Ctrl+Shift+O still toggles OCR Mode.
-  if (document.activeElement === ocrSearchInput) {
-    if (e.key === 'O' && e.shiftKey && (e.ctrlKey || e.metaKey)) { e.preventDefault(); toggleOcrMode(); }
-    return;
-  }
+  // Typing in the OCR find box: let the browser handle everything (typing,
+  // caret, native clipboard) — including the letter "O", which is the OCR
+  // toggle everywhere else. Esc (handled by the input's own listener) exits.
+  if (document.activeElement === ocrSearchInput) return;
   const typingInField = ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
 
   // While focus is in a text field, the browser must own the standard editing
@@ -4730,6 +4704,12 @@ document.addEventListener('keydown', (e) => {
     if (editing) { cancelText(); return; }
     if (multiSelectAll) { multiSelectAll = false; return; }
     if (ocrModeActive) { exitOcrMode(); return; }
+    // In Report Mode the user may be mid-annotation: the first Escape clears the
+    // tool/selection (normal editing behaviour), a second one leaves the mode.
+    if (reportModeActive) {
+      if (activeTool || selectedId) { selectedId = null; setActiveTool(null); return; }
+      exitReportMode(); return;
+    }
     selectedId = null;
     setActiveTool(null);
     return;
@@ -4765,7 +4745,7 @@ document.addEventListener('keydown', (e) => {
     if (def.kind === 'readonly' || def.kind === 'global') continue;
     if (bindingFor(def.id) !== combo) continue;
     if (typingInField && single) continue; // don't steal letters while typing in a field
-    if (ocrModeActive && def.kind === 'tool') continue; // annotation tools are inert in OCR Mode
+    if (ocrModeActive && def.kind === 'tool') continue; // annotation tools are inert in OCR Mode (Report Mode allows them)
     e.preventDefault();
     runShortcut(def);
     return;
@@ -4927,8 +4907,36 @@ document.getElementById('tb-theme-btn').addEventListener('click', () => {
 // persisted View ▸ Screenshot Background action as the menu checkbox; the
 // button's own on/off look is reflected by applyBackgroundState().
 document.getElementById('tb-bg-toggle').addEventListener('click', () => {
+  // In Report Mode the toggle drives the mode-local background override —
+  // the persisted View ▸ Screenshot Background setting stays untouched, so
+  // leaving the mode restores whatever the user had before.
+  if (reportModeActive) {
+    reportBgEnabled = !reportBgEnabled;
+    syncBgToggleUI();
+    render();
+    return;
+  }
   window.electronAPI.menuAction('view.background');
 });
+
+// The background actually painted right now: OCR Mode always suppresses it,
+// Report Mode suppresses it unless the user re-enabled it for this mode, and
+// normal editing follows the persisted setting.
+function bgEffective() {
+  if (ocrModeActive) return false;
+  if (reportModeActive) return reportBgEnabled;
+  return backgroundEnabled;
+}
+
+// Reflect the effective background state on the toolbar toggle (in Report Mode
+// that's the mode-local override, not the persisted setting).
+function syncBgToggleUI() {
+  const btn = document.getElementById('tb-bg-toggle');
+  if (!btn) return;
+  const on = reportModeActive ? reportBgEnabled : backgroundEnabled;
+  btn.classList.toggle('active', on);
+  btn.title = on ? 'Hide background & sidebar' : 'Show background & sidebar';
+}
 
 // Balance (auto-composition) toggle — a persisted user preference like the
 // crop fill; the per-image analysis itself lives in getBalanceRect().
@@ -4948,13 +4956,13 @@ balanceToggle.addEventListener('change', () => {
 // state arrives with the settings on startup and via the settings broadcast.
 function applyBackgroundState(on) {
   on = on !== false; // default ON when the setting has never been written
-  const btn = document.getElementById('tb-bg-toggle');
-  if (btn) {
-    btn.classList.toggle('active', on);
-    btn.title = on ? 'Hide background & sidebar' : 'Show background & sidebar';
-  }
-  if (on === backgroundEnabled) return;
+  if (on === backgroundEnabled) { syncBgToggleUI(); return; }
+  // Turning the background back on means asking for the #controls panel, so drop
+  // out of any sidebar mode that would otherwise keep covering it. (Turning it
+  // off hides the sidebar outright, which is fine from any mode.)
+  if (on) closeSidebarModes(null);
   backgroundEnabled = on;
+  syncBgToggleUI();
   document.body.classList.toggle('bg-off', !on);
   positionToolbar(); // sidebar shown/hidden → canvas width changed → re-center
   if (screenshotImg) render();
@@ -5131,6 +5139,8 @@ function saveLiveStateToTab(tab) {
   tab.nextCounter   = nextCounter;
   tab.ocrModeActive = ocrModeActive;
   tab.ocrData       = ocrData;
+  tab.reportModeActive = reportModeActive;
+  tab.reportData       = reportData;
   tab.redactEnabledTypes = redactEnabledTypes;
 }
 
@@ -5157,6 +5167,8 @@ function loadTabIntoLive(tab) {
   cropRatioKey  = tab.cropRatioKey || 'free';
   ocrModeActive = tab.ocrModeActive || false;
   ocrData       = tab.ocrData || null;
+  reportModeActive = tab.reportModeActive || false;
+  reportData       = tab.reportData || null;
   redactEnabledTypes = tab.redactEnabledTypes || new Set();
   refreshRedactUI(); // reflect this tab's live-redaction toggles + count
 
@@ -5190,8 +5202,6 @@ function loadTabIntoLive(tab) {
   document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === activeTool);
   });
-  const shapeBtnR = document.querySelector('.tool-btn[data-tool="shape"]');
-  if (shapeBtnR) shapeBtnR.classList.toggle('active', isShapeGroupTool(activeTool));
   canvas.style.cursor = activeTool === 'text' ? 'text'
                       : activeTool === 'crop' ? 'move'
                       : (isDrawingTool(activeTool) || activeTool === 'counter') ? 'crosshair'
@@ -5208,6 +5218,7 @@ function loadTabIntoLive(tab) {
   // Re-establish the OCR text layer/chrome for the incoming tab (after render so
   // `view` is current). Defined in the OCR Mode section near the end of the file.
   if (typeof syncOcrModeForTab === 'function') syncOcrModeForTab();
+  if (typeof syncReportModeForTab === 'function') syncReportModeForTab();
 }
 
 // Build the tab-bar DOM from the current `tabs` / `activeTabId`.
@@ -5243,8 +5254,9 @@ function renderTabBar() {
 }
 
 // Create a new tab for `dataUrl`, make it active, and load the image into it.
-// `autoOcr` opens the tab directly in OCR Mode once the image decodes.
-function createTab(dataUrl, autoOcr = false) {
+// `autoOcr` opens the tab directly in OCR Mode once the image decodes;
+// `autoReport` does the same for Report Mode (Jira report capture).
+function createTab(dataUrl, autoOcr = false, autoReport = false) {
   const cur = tabs.find(t => t.id === activeTabId);
   if (cur) saveLiveStateToTab(cur); // preserve the outgoing tab's live edits
 
@@ -5277,6 +5289,10 @@ function createTab(dataUrl, autoOcr = false) {
   draft = null; editing = null; editingId = null;
   mode = null; dragInfo = null; multiSelectAll = false;
   ocrModeActive = false; ocrData = null;
+  reportModeActive = false; reportData = null;
+  // OCR/Report-mode capture: start loading the engine now, in parallel with the
+  // image decode below, so the first scan can recognize immediately.
+  if (autoOcr || autoReport) getOcrWorker().catch(() => {});
   redactEnabledTypes = new Set(); refreshRedactUI(); // fresh capture: nothing redacted
   renderTabBar();
 
@@ -5288,7 +5304,8 @@ function createTab(dataUrl, autoOcr = false) {
     if (activeTabId === tab.id) {
       screenshotImg = img;
       loadTabIntoLive(tab);
-      if (autoOcr) enterOcrMode(); // capture was taken in OCR Mode
+      if (autoOcr) enterOcrMode();          // capture was taken in OCR Mode
+      else if (autoReport) enterReportMode(); // capture was taken for a Jira report
     }
     renderTabBar();
   };
@@ -5329,6 +5346,13 @@ function closeTab(id) {
     screenshotImg = null;
     annotations = []; history = []; redoStack = [];
     selectedId = null; cropRect = null;
+    // Full empty-state chrome toggle (same as loadTabIntoLive's no-image branch)
+    // so the canvas doesn't keep showing the closed tab's last painted bitmap —
+    // the window is only hidden to tray here, not destroyed, so a stale canvas
+    // would otherwise still be visible the next time it's shown.
+    canvas.style.display      = 'none';
+    placeholder.style.display = '';
+    toolbarStack.classList.add('no-image');
     document.body.classList.add('no-image');
     renderTabBar();
     window.electronAPI.closeAllTabs();
@@ -5347,10 +5371,11 @@ function closeTab(id) {
 // Each capture / open / clipboard / history load arrives here and opens a NEW
 // tab in this (single) editor window rather than replacing the canvas.
 window.electronAPI.onLoadScreenshot((payload) => {
-  // Main sends { dataUrl, ocr }; tolerate a bare string for safety.
+  // Main sends { dataUrl, ocr, report }; tolerate a bare string for safety.
   const dataUrl = typeof payload === 'string' ? payload : payload.dataUrl;
   const ocr     = typeof payload === 'object' && !!payload.ocr;
-  createTab(dataUrl, ocr);
+  const report  = typeof payload === 'object' && !!payload.report;
+  createTab(dataUrl, ocr, report);
 });
 
 // ─── Export ─────────────────────────────────────────────────────────────────────
@@ -5715,6 +5740,7 @@ const STG_TABS = {
   general:   { title: 'General',           desc: 'Where your exports go and how LumShot behaves on your computer.' },
   capture:   { title: 'Capture',            desc: 'Tune the region-capture experience and its shortcut.' },
   ai:        { title: 'Capture to AI',      desc: 'Send a screenshot straight into the app you were using, ready to prompt.' },
+  integrations: { title: 'Integrations',    desc: 'Connect Lumshot to the tools where your screenshots end up.' },
   shortcuts: { title: 'Keyboard Shortcuts', desc: 'Customize the shortcuts used for tools and actions throughout the editor.' },
   license:   { title: 'License',            desc: 'Activate LumShot to unlock custom watermarks and remove branding.' },
   watermark: { title: 'Watermark',          desc: 'Add your own watermark to exported images.' },
@@ -5744,6 +5770,7 @@ function renderSettingsView() {
     stgAboutLicenses.hidden = stgLegalView !== 'licenses';
   }
   if (stgActiveTab === 'shortcuts') buildShortcutsPanel();
+  if (stgActiveTab === 'integrations') refreshJiraSettings(); // local status read — no network
 }
 
 // Sidebar nav click: switch tab, always reset the About sub-view.
@@ -5812,10 +5839,77 @@ document.getElementById('stg-check-updates-btn').addEventListener('click', async
 // Open from the Settings menu / tray
 window.electronAPI.onOpenSettings(openSettingsPanel);
 
+// ─── Integrations tab: Jira connection ──────────────────────────────────────────
+// The token is sent to main once (jira:connect) and never comes back; this tab
+// only ever renders the status object. Opening the tab costs one local store
+// read — no network until the user clicks Connect.
+let jiraStatus = null; // last-known status (also used by Report Mode's form)
+
+async function refreshJiraSettings() {
+  try { jiraStatus = await window.electronAPI.jiraGetStatus(); }
+  catch { jiraStatus = { connected: false }; }
+  const form = document.getElementById('stg-jira-form');
+  const connected = document.getElementById('stg-jira-connected');
+  form.hidden = !!jiraStatus.connected;
+  connected.hidden = !jiraStatus.connected;
+  if (jiraStatus.connected) {
+    document.getElementById('stg-jira-who').textContent =
+      `Connected as ${jiraStatus.displayName} (${jiraStatus.email})`;
+    document.getElementById('stg-jira-site-label').textContent = jiraStatus.siteUrl;
+  }
+}
+
+function jiraSettingsError(msg) {
+  const el = document.getElementById('stg-jira-error');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+
+document.getElementById('stg-jira-token-link').addEventListener('click', () => window.electronAPI.jiraOpenTokenPage());
+document.getElementById('stg-jira-manage-link').addEventListener('click', () => window.electronAPI.jiraOpenTokenPage());
+
+document.getElementById('stg-jira-connect').addEventListener('click', async () => {
+  const btn = document.getElementById('stg-jira-connect');
+  const args = {
+    site:  document.getElementById('stg-jira-site').value,
+    email: document.getElementById('stg-jira-email').value,
+    token: document.getElementById('stg-jira-token').value,
+  };
+  jiraSettingsError('');
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  let r;
+  try { r = await window.electronAPI.jiraConnect(args); }
+  catch { r = { ok: false, message: 'Something went wrong talking to the app process.' }; }
+  btn.disabled = false;
+  btn.textContent = 'Connect';
+  if (r && r.ok) {
+    document.getElementById('stg-jira-token').value = ''; // don't keep the token in the DOM
+    jiraResetCaches(); // a different account may see different projects
+    await refreshJiraSettings();
+    // If the user came here from Report Mode's Create button, the form behind
+    // the Settings page goes live right away.
+    if (typeof renderReportJira === 'function' && reportModeActive) renderReportJira();
+    showToast('Jira connected');
+  } else {
+    jiraSettingsError((r && r.message) || 'Could not connect to Jira.');
+  }
+});
+
+document.getElementById('stg-jira-disconnect').addEventListener('click', async () => {
+  try { await window.electronAPI.jiraDisconnect(); } catch {}
+  jiraResetCaches();
+  refreshJiraSettings();
+  if (typeof renderReportJira === 'function' && reportModeActive) renderReportJira();
+  showToast('Jira disconnected');
+});
+
 // ═══ Keyboard Shortcuts panel + editable bindings ═══════════════════════════════
 const SHORTCUT_DEFS = [
   { group: 'Capture', id: 'newScreenshot',     label: 'New Screenshot',      def: 'Ctrl+Shift+S', kind: 'global' },
   { group: 'Capture', id: 'aiSnapshot',        label: 'AI Snapshot',         def: 'Ctrl+Shift+A', kind: 'global' },
+  // Ctrl+Shift+R is reserved for the upcoming Screen Recording feature.
+  { group: 'Capture', id: 'reportCapture',     label: 'Report Capture',      def: 'Ctrl+Shift+I', kind: 'global' },
   { group: 'Capture', id: 'regionCapture',     label: 'Region Capture',      def: 'In overlay',   kind: 'readonly' },
   { group: 'Capture', id: 'windowCapture',     label: 'Window Capture',      def: 'In overlay',   kind: 'readonly' },
   { group: 'Capture', id: 'fullscreenCapture', label: 'Full Screen Capture', def: 'In overlay',   kind: 'readonly' },
@@ -5827,7 +5921,11 @@ const SHORTCUT_DEFS = [
   { group: 'Editor', id: 'undo',          label: 'Undo',               def: 'Ctrl+Z',       kind: 'action' },
   { group: 'Editor', id: 'openImage',     label: 'Open Image',         def: 'Ctrl+O',       kind: 'action' },
   { group: 'Editor', id: 'openClipboard', label: 'Open from Clipboard',def: 'Ctrl+V',       kind: 'action' },
-  { group: 'Editor', id: 'ocrMode',       label: 'Toggle OCR Mode',    def: 'Ctrl+Shift+O', kind: 'action' },
+  // OCR and Report are editing modes like the annotation tools, so they follow
+  // the same single-key scheme (single keys are already inert while typing in
+  // a text field, so Report Mode's summary/description stay safe).
+  { group: 'Editor', id: 'ocrMode',       label: 'Toggle OCR Mode',    def: 'O', kind: 'action' },
+  { group: 'Editor', id: 'reportMode',    label: 'Toggle Report Mode', def: 'J', kind: 'action' },
   { group: 'Editor', id: 'zoomIn',        label: 'Zoom In',            def: 'Ctrl+=',       kind: 'action' },
   { group: 'Editor', id: 'zoomOut',       label: 'Zoom Out',           def: 'Ctrl+-',       kind: 'action' },
 
@@ -5859,9 +5957,13 @@ function aiHotkeyDisplay() {
   const hotkey = appSettings && appSettings.captureToAI && appSettings.captureToAI.hotkey;
   return (hotkey ? spDisplayAccel(hotkey) : '') || 'Ctrl+Shift+A';
 }
+function reportHotkeyDisplay() {
+  return (appSettings && appSettings.reportHotkey ? spDisplayAccel(appSettings.reportHotkey) : '') || 'Ctrl+Shift+I';
+}
 function bindingFor(id) {
-  if (id === 'newScreenshot') return globalHotkeyDisplay();
-  if (id === 'aiSnapshot')    return aiHotkeyDisplay();
+  if (id === 'newScreenshot')  return globalHotkeyDisplay();
+  if (id === 'aiSnapshot')     return aiHotkeyDisplay();
+  if (id === 'reportCapture')  return reportHotkeyDisplay();
   return scOverrides[id] || defOf(id);
 }
 
@@ -5910,6 +6012,7 @@ function runShortcut(def) {
     case 'openImage':     window.electronAPI.openImage(); break;
     case 'openClipboard': if (window.electronAPI.openFromClipboard) window.electronAPI.openFromClipboard(); break;
     case 'ocrMode':       toggleOcrMode(); break;
+    case 'reportMode':    toggleReportMode(); break;
     case 'zoomIn':        handleZoom('in'); break;
     case 'zoomOut':       handleZoom('out'); break;
     case 'clearAll':      clearAll(); break;
@@ -5968,6 +6071,7 @@ function buildShortcutRow(def) {
     // Hide reset when already at default (nothing to reset)
     const isDefault = def.id === 'newScreenshot' ? bindingFor('newScreenshot') === 'Ctrl+Shift+S'
       : def.id === 'aiSnapshot' ? bindingFor('aiSnapshot') === 'Ctrl+Shift+A'
+      : def.id === 'reportCapture' ? bindingFor('reportCapture') === 'Ctrl+Shift+I'
       : !scOverrides[def.id];
     if (isDefault) reset.classList.add('hidden');
   }
@@ -6006,12 +6110,12 @@ function scCaptureKey(e) {
 }
 
 async function setShortcut(def, combo) {
-  if (def.id === 'newScreenshot' || def.id === 'aiSnapshot') {
+  if (def.id === 'newScreenshot' || def.id === 'aiSnapshot' || def.id === 'reportCapture') {
     const accel = combo.replace('Ctrl', 'CommandOrControl');
     try {
-      const res = def.id === 'newScreenshot'
-        ? await window.electronAPI.setHotkey(accel)
-        : await window.electronAPI.setAiHotkey(accel);
+      const res = def.id === 'newScreenshot' ? await window.electronAPI.setHotkey(accel)
+        : def.id === 'aiSnapshot'            ? await window.electronAPI.setAiHotkey(accel)
+        :                                      await window.electronAPI.setReportHotkey(accel);
       if (res && res.settings) appSettings = res.settings;
       if (res && res.ok === false) showScWarning(scListenPill, 'That combination is unavailable');
     } catch {}
@@ -6039,6 +6143,13 @@ function resetShortcut(def) {
     });
     return;
   }
+  if (def.id === 'reportCapture') {
+    window.electronAPI.setReportHotkey('CommandOrControl+Shift+I').then(res => {
+      if (res && res.settings) appSettings = res.settings;
+      buildShortcutsPanel();
+    });
+    return;
+  }
   delete scOverrides[def.id];
   window.electronAPI.setShortcuts(scOverrides);
   buildShortcutsPanel();
@@ -6051,6 +6162,10 @@ function resetAllShortcuts() {
     if (res && res.settings) appSettings = res.settings;
   }).catch(() => {}).then(() =>
     window.electronAPI.setAiHotkey('CommandOrControl+Shift+A').then(res => {
+      if (res && res.settings) appSettings = res.settings;
+    }).catch(() => {})
+  ).then(() =>
+    window.electronAPI.setReportHotkey('CommandOrControl+Shift+I').then(res => {
       if (res && res.settings) appSettings = res.settings;
       buildShortcutsPanel();
     }).catch(() => buildShortcutsPanel())
@@ -6525,6 +6640,16 @@ function relativeTime(ts) {
   return d + 'd ago';
 }
 
+// The right sidebar hosts one mode at a time: OCR, Report, History, or the
+// default #controls panel. Each enter*Mode() calls this first so opening one
+// always closes the others — the single place that keeps them exclusive. Adding
+// a future mode means adding it here, not another pairwise check per function.
+function closeSidebarModes(except) {
+  if (except !== 'ocr'     && ocrModeActive)     exitOcrMode();
+  if (except !== 'report'  && reportModeActive)  exitReportMode();
+  if (except !== 'history' && historyModeActive) exitHistoryMode();
+}
+
 // History Mode is a sidebar swap, the same pattern as OCR Mode (see
 // enterOcrMode/exitOcrMode): #controls (or #ocr-controls) is hidden and
 // #history-controls takes its place via body.history-mode. Since #controls'
@@ -6536,6 +6661,7 @@ const historySbBody = document.getElementById('history-sb-body');
 
 async function enterHistoryMode() {
   if (historyModeActive) return;
+  closeSidebarModes('history');
   historyModeActive = true;
   document.body.classList.add('history-mode');
   positionToolbar(); // sidebar swap → canvas width may have changed (e.g. from the no-image state)
@@ -6884,18 +7010,31 @@ function loadTesseractLib() {
   return _tesseractLibPromise;
 }
 
+// While a scan should surface progress in the UI this holds a callback fed
+// 0..1 recognition progress (set by runOcrForLayer, cleared when it finishes).
+let _ocrProgress = null;
+
 // Resolve (and cache) the shared Tesseract worker. On failure the cached promise
 // is cleared so a later click can retry rather than reject forever.
 function getOcrWorker() {
   touchOcrActivity();
   if (_ocrWorkerPromise) return _ocrWorkerPromise;
-  _ocrWorkerPromise = loadTesseractLib().then(() => {
+  _ocrWorkerPromise = loadTesseractLib().then(async () => {
     if (typeof Tesseract === 'undefined') throw new Error('OCR engine failed to load.');
-    return Tesseract.createWorker('eng', 1, {
+    const worker = await Tesseract.createWorker('eng', 1, {
       ...OCR_PATHS,
       gzip: true,
       cacheMethod: 'none', // always read the bundled file; skip the IndexedDB layer
+      logger: (m) => { if (m.status === 'recognizing text' && _ocrProgress) _ocrProgress(m.progress || 0); },
     });
+    // Page-seg mode SINGLE_BLOCK (the tesseract API default), set explicitly
+    // after measuring the alternatives on screenshot-style content: AUTO (3),
+    // SINGLE_COLUMN (4) and SPARSE (11) all drop isolated single-glyph lines
+    // (a lone "}" in a code snip), and AUTO doesn't actually separate columns
+    // any better than SINGLE_BLOCK does. Column gaps that do get merged are
+    // reconstructed as wide spacing by joinWordsSmart instead.
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    return worker;
   });
   _ocrWorkerPromise.catch(() => { _ocrWorkerPromise = null; });
   return _ocrWorkerPromise;
@@ -6916,28 +7055,103 @@ async function terminateOcrWorker() {
   try { const w = await p; if (w && w.terminate) await w.terminate(); } catch { /* already gone */ }
 }
 
-// Draw the raw screenshot to a natural-size canvas. Passing a canvas (rather than
-// the <img>) avoids Tesseract re-fetching img.src and makes the OCR pixel space
-// exactly naturalWidth × naturalHeight, so word boxes map cleanly to fractions.
-function ocrSourceCanvas(img = screenshotImg) {
+// ── Recognition pipeline (shared by OCR Mode and Redact) ────────────────────
+// Light preprocessing targets the two screenshot cases Tesseract's LSTM is
+// worst at: small text (region snips → upscale) and dark themes (light text on
+// dark → invert). Word boxes come back in the scaled space and are normalized
+// to natural-image pixels in collectOcrLines.
+
+// Upscale factor: LSTM wants glyphs ≳20px tall, region snips are often far
+// below that. Budget-capped so full-screen captures aren't slowed down.
+function ocrScaleFor(iw, ih) {
+  const px = iw * ih;
+  if (px <= 300_000) return 3;  // small snips → 3× (≤ ~2.7MP scanned)
+  if (px <= 900_000) return 2;  // window-ish captures → 2× (≤ ~3.6MP scanned)
+  return 1;                     // full screens are already ≥ ~2MP
+}
+
+// Mean luminance from a 32×32 sample — dark-theme captures OCR far better
+// inverted to dark-on-light (Tesseract binarizes assuming dark glyphs).
+function ocrIsDark(img) {
+  const c = document.createElement('canvas');
+  c.width = 32; c.height = 32;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, 32, 32);
+  const d = ctx.getImageData(0, 0, 32, 32).data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  return (sum / (d.length / 4)) < 100;
+}
+
+// Preprocess `img` for recognition → { src, scale }. `src` is a PNG Blob when
+// possible (encoding starts here, async, instead of inside tesseract.js's own
+// input conversion) with the canvas itself as fallback — v7 handles both.
+async function buildOcrInput(img) {
   const iw = img.naturalWidth  || img.width;
   const ih = img.naturalHeight || img.height;
+  const scale = ocrScaleFor(iw, ih);
   const c = document.createElement('canvas');
-  c.width = iw; c.height = ih;
-  c.getContext('2d').drawImage(img, 0, 0, iw, ih);
-  return c;
+  c.width = iw * scale; c.height = ih * scale;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  try { if (ocrIsDark(img)) ctx.filter = 'invert(1)'; } catch { /* filter unsupported → raw */ }
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  const blob = await new Promise((res) => { try { c.toBlob(res, 'image/png'); } catch { res(null); } });
+  return { src: blob || c, scale };
+}
+
+// Recognition results keyed by image element. Small LRU: entries are flattened
+// word lines (tiny), never the raw Tesseract blocks tree, so keeping a few
+// tabs' results around costs almost nothing.
+const _ocrResults = new Map(); // img → Promise<{ lines }>
+const OCR_RESULT_CACHE_MAX = 3;
+
+// One recognize() per image: concurrent callers (OCR Mode, redact toggles, the
+// sidebar warm-up) all share the same in-flight promise, and repeat visits are
+// instant. On a recognize failure the worker is rebuilt and the scan retried
+// once — a crashed WASM core would otherwise poison every later OCR action.
+function ocrRecognize(img) {
+  touchOcrActivity();
+  const hit = _ocrResults.get(img);
+  if (hit) { _ocrResults.delete(img); _ocrResults.set(img, hit); return hit; } // LRU bump
+  const p = (async () => {
+    const input = await buildOcrInput(img);
+    const scan = async () => {
+      const worker = await getOcrWorker();
+      // text:false skips assembling output strings we never read (we build our
+      // own text from the word boxes below).
+      const { data } = await worker.recognize(input.src, {}, { blocks: true, text: false });
+      return data;
+    };
+    let data;
+    try { data = await scan(); }
+    catch (err) { await terminateOcrWorker(); data = await scan(); }
+    return { lines: collectOcrLines(data, input.scale) };
+  })();
+  _ocrResults.set(img, p);
+  while (_ocrResults.size > OCR_RESULT_CACHE_MAX) _ocrResults.delete(_ocrResults.keys().next().value);
+  p.catch(() => { if (_ocrResults.get(img) === p) _ocrResults.delete(img); });
+  return p;
 }
 
 // Flatten Tesseract's block tree (output:{blocks:true}) into lines, each a list
-// of { text, x0, y0, x1, y1 } words in source-image pixels.
-function collectOcrLines(data) {
+// of { text, x0, y0, x1, y1 } words in natural-image pixels (divided back down
+// by the preprocessing upscale). No confidence filtering: a lone real "}" in a
+// code snip measures conf ≈11 while icon noise measures 20–60, so any cutoff
+// that removes noise also removes real code punctuation.
+function collectOcrLines(data, scale = 1) {
   const lines = [];
   for (const block of (data.blocks || [])) {
     for (const para of (block.paragraphs || [])) {
       for (const line of (para.lines || [])) {
         const words = (line.words || [])
           .filter(w => w && w.text && w.bbox)
-          .map(w => ({ text: w.text, x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }));
+          .map(w => ({
+            text: w.text,
+            x0: w.bbox.x0 / scale, y0: w.bbox.y0 / scale,
+            x1: w.bbox.x1 / scale, y1: w.bbox.y1 / scale,
+          }));
         if (words.length) lines.push(words);
       }
     }
@@ -6947,11 +7161,12 @@ function collectOcrLines(data) {
 
 // Find PII per line and return the union bounding box (image px) of the words
 // each match spans — handles both single-token (email, SSN) and space-separated
-// matches (phone numbers OCR'd as several words).
-function detectPIIBoxes(data, types) {
+// matches (phone numbers OCR'd as several words). `lines` is the flattened
+// output of collectOcrLines (via ocrRecognize's result.lines).
+function detectPIIBoxes(lines, types) {
   const active = types ? new Set(types) : null; // null → all categories
   const boxes = [];
-  for (const words of collectOcrLines(data)) {
+  for (const words of lines) {
     let text = '';
     const spans = [];
     words.forEach((w, i) => {
@@ -7030,52 +7245,31 @@ function addRedactionBoxes(boxes) {
 
 const isAiRedaction = (a) => !!a && a.type === 'blur' && a.isAIDetected;
 
-// Cached OCR word data for redaction, keyed by the image it came from (a tab
-// switch or new capture changes screenshotImg, so the cache misses and re-scans).
-const _redactOcrCache = { img: null, data: null };
-let _redactOcrPromise = null;   // in-flight OCR, so concurrent toggles share one pass
-let _redactRunToken   = 0;      // guards against stale async applies
-
-// Resolve (and cache) the OCR word data for `img`, running a single recognize()
-// pass if needed. Concurrent callers for the same image share the one promise.
-function ensureRedactOcr(img) {
-  if (_redactOcrCache.img === img && _redactOcrCache.data) return Promise.resolve(_redactOcrCache.data);
-  if (_redactOcrPromise && _redactOcrPromise.img === img) return _redactOcrPromise.p;
-  const p = (async () => {
-    const worker = await getOcrWorker();
-    const { data } = await worker.recognize(ocrSourceCanvas(img), {}, { blocks: true });
-    if (screenshotImg === img) { _redactOcrCache.img = img; _redactOcrCache.data = data; }
-    return data;
-  })();
-  _redactOcrPromise = { img, p };
-  p.catch(() => {}).finally(() => { if (_redactOcrPromise && _redactOcrPromise.p === p) _redactOcrPromise = null; });
-  return p;
-}
+let _redactRunToken = 0;        // guards against stale async applies
 
 // Recompute every AI-redaction box from the currently-enabled categories and swap
 // the old set for the new one as a single undo step. Called on each category
 // checkbox change. No "scanning…" UI — expanding the section already warmed the
-// OCR cache (see initRedactSidebar's setExpanded), so this normally resolves
-// against already-recognized word data and reads as instant.
+// shared recognition cache (see initRedactSidebar's setExpanded), so this
+// normally resolves against already-recognized word data and reads as instant.
 async function applyRedactions() {
   if (!screenshotImg) { refreshRedactUI(); return; }
   const token = ++_redactRunToken;
+  const img = screenshotImg;
   const types = [...redactEnabledTypes];
 
   let boxes = [];
   if (types.length) {
-    let data = (_redactOcrCache.img === screenshotImg) ? _redactOcrCache.data : null;
-    if (!data) {
-      try {
-        data = await ensureRedactOcr(screenshotImg);
-      } catch (err) {
-        if (token === _redactRunToken) { showToast(`Redaction failed: ${err.message}`); refreshRedactUI(); }
-        return;
-      }
-      // A newer toggle, tab switch or image swap happened while OCR ran — abandon.
-      if (token !== _redactRunToken || _redactOcrCache.img !== screenshotImg) return;
+    let result;
+    try {
+      result = await ocrRecognize(img);
+    } catch (err) {
+      if (token === _redactRunToken) { showToast(`Redaction failed: ${err.message}`); refreshRedactUI(); }
+      return;
     }
-    boxes = detectPIIBoxes(data, types);
+    // A newer toggle, tab switch or image swap happened while OCR ran — abandon.
+    if (token !== _redactRunToken || screenshotImg !== img) return;
+    boxes = detectPIIBoxes(result.lines, types);
   }
 
   // Skip a redundant history entry when there's genuinely nothing to change
@@ -7132,8 +7326,9 @@ function fallbackCopy(text, done) {
 
 // ═══ OCR Mode — inline, selectable text over the captured image ══════════════════
 // A first-class capture/editing mode (vs. the old Extract Text modal). The active
-// tab's recognized text is rendered as absolutely-positioned, selectable/editable
-// line elements on top of the canvas — like Windows Snipping Tool's text view.
+// tab's recognized text is rendered as absolutely-positioned, selectable line
+// elements on top of the canvas — like Windows Snipping Tool's text view.
+// (Editing happens in the Note dialog, not on the lines themselves.)
 // State lives on the tab (ocrModeActive + ocrData) so toggling is non-destructive
 // and survives tab switches; annotations are untouched underneath.
 
@@ -7183,14 +7378,14 @@ function renderOcrSidebarMessage(msg) {
   ocrSbPreview.classList.add('empty');
   setOcrSbActionsEnabled(false);
 }
-// Reflect `ocrData` into the sidebar (block count + confidence, text preview,
-// enabled actions), or fall back to the "no text" placeholder.
+// Reflect `ocrData` into the sidebar (text preview, enabled actions), or fall
+// back to the "no text" placeholder. The meta line is cleared on success: block
+// count and confidence are engine diagnostics, not something to read the text by.
+// It still carries the scanning/no-text/failed states from renderOcrSidebarMessage.
 function renderOcrSidebar() {
   if (!ocrSbMeta) return;
   if (!ocrData || !ocrData.lines.length) { renderOcrSidebarMessage('No text detected'); return; }
-  const n = ocrData.lines.length;
-  ocrSbMeta.textContent = n + ' text block' + (n === 1 ? '' : 's')
-    + (ocrData.confidence ? ' · ' + ocrData.confidence + '% confidence' : '');
+  ocrSbMeta.textContent = '';
   ocrSbPreview.textContent = ocrAllText();
   ocrSbPreview.classList.remove('empty');
   setOcrSbActionsEnabled(true);
@@ -7206,18 +7401,88 @@ function applyOcrChrome() {
   if (enterBtn) enterBtn.classList.toggle('active', ocrModeActive);
   document.getElementById('ocr-search').classList.toggle('active', ocrModeActive && ocrSearchActive);
   ocrSearchBar.classList.toggle('on', ocrModeActive && ocrSearchActive);
-  positionToolbar(); // OCR sidebar (290px) differs from #controls (316px) → canvas width changed
+  // Every sidebar is --sidebar-w wide, so an OCR swap alone doesn't move the
+  // canvas edge — but entering from bg-off (no sidebar at all) does.
+  positionToolbar();
 }
 
-// Build the OCR source canvas at natural size → exact pixel→fraction mapping.
-function buildOcrLineData(data) {
-  return collectOcrLines(data).map((words) => ({
-    text: words.map(w => w.text).join(' '),
+// Median character width across all recognized words — the yardstick for the
+// gap-based spacing and indentation reconstruction below.
+function ocrMedianCharW(lines) {
+  const ws = [];
+  for (const words of lines) {
+    for (const w of words) if (w.text.length) ws.push((w.x1 - w.x0) / w.text.length);
+  }
+  if (!ws.length) return 0;
+  ws.sort((a, b) => a - b);
+  return ws[ws.length >> 1];
+}
+
+// Join a line's words, widening to multiple spaces where the pixel gap says the
+// source had them — preserves column alignment in code, terminals and tables
+// instead of collapsing everything to single spaces. Small gaps (normal
+// proportional-font word spacing) stay a single space.
+function joinWordsSmart(words, charW) {
+  let text = words[0].text;
+  for (let i = 1; i < words.length; i++) {
+    let spaces = 1;
+    if (charW > 0) {
+      const gap = words[i].x0 - words[i - 1].x1;
+      if (gap > charW * 2) spaces = Math.min(120, Math.round(gap / charW));
+    }
+    text += ' '.repeat(spaces) + words[i].text;
+  }
+  return text;
+}
+
+// Turn recognized word lines into the per-line layer/copy model. Lines are
+// grouped into paragraphs geometrically — consecutive lines that follow the
+// vertical rhythm (gap ≤ ~1.2× median line height) stay together; a bigger gap
+// or a jump back up (new column/region) starts a new group. Tesseract's own
+// block/paragraph ids are unreliable for this on screenshot content. `indent`
+// is leading whitespace relative to the line's own group (so separate regions
+// don't inflate the copy with page-wide margins); it's reproduced only in
+// copied text — the on-canvas line box still starts at x0. `block` (the group
+// id) drives blank-line paragraph breaks in ocrAllText.
+function buildOcrLineData(lines) {
+  const charW = ocrMedianCharW(lines);
+  const boxes = lines.map((words) => ({
+    words,
     x0: Math.min(...words.map(w => w.x0)),
     y0: Math.min(...words.map(w => w.y0)),
     x1: Math.max(...words.map(w => w.x1)),
     y1: Math.max(...words.map(w => w.y1)),
   }));
+  const hs = boxes.map(b => b.y1 - b.y0).sort((a, b) => a - b);
+  const medH = hs.length ? hs[hs.length >> 1] : 0;
+  let group = -1;
+  let prev = null;
+  for (const b of boxes) {
+    // Conservative breaks: only a clearly-large gap (≈ a blank line) or a jump
+    // back upward (new column/region) starts a new group — normal UI leading
+    // (1.5–2× line height) must stay grouped so indentation has a stable base.
+    const gap = prev ? b.y0 - prev.y1 : Infinity;
+    if (!prev || medH <= 0 || gap > medH * 2 || gap < -medH * 0.5) group++;
+    b.block = group;
+    prev = b;
+  }
+  const groupMinX = new Map();
+  for (const b of boxes) {
+    if (!groupMinX.has(b.block) || b.x0 < groupMinX.get(b.block)) groupMinX.set(b.block, b.x0);
+  }
+  return boxes.map((b) => {
+    let indent = 0;
+    if (charW > 0) {
+      indent = Math.min(80, Math.round((b.x0 - groupMinX.get(b.block)) / charW));
+      if (indent < 2) indent = 0;
+    }
+    return {
+      text: joinWordsSmart(b.words, charW),
+      indent,
+      block: b.block,
+      x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1,
+    };
+  });
 }
 
 // (Re)create the line elements from ocrData. Called when entering OCR Mode or
@@ -7257,14 +7522,19 @@ function positionOcrLayer() {
 }
 
 async function runOcrForLayer() {
+  const srcImg = screenshotImg;
   startOcrScan();                        // sweeping scan-line over the image while we recognize
   renderOcrSidebarMessage('Scanning…');
+  // Live recognition progress in the sidebar (fed by the worker's logger).
+  const myProgress = (p) => {
+    if (ocrModeActive && screenshotImg === srcImg && ocrSbMeta)
+      ocrSbMeta.textContent = 'Scanning… ' + Math.min(99, Math.round(p * 100)) + '%';
+  };
+  _ocrProgress = myProgress;
   try {
-    const worker = await getOcrWorker();
-    const srcImg = screenshotImg;
-    const { data } = await worker.recognize(ocrSourceCanvas(), {}, { blocks: true });
+    const result = await ocrRecognize(srcImg);
     if (screenshotImg !== srcImg) { stopOcrScan(); return; } // image changed mid-scan — abandon
-    ocrData = { img: srcImg, lines: buildOcrLineData(data), confidence: Math.round(data.confidence || 0) };
+    ocrData = { img: srcImg, lines: buildOcrLineData(result.lines) };
     stopOcrScan();
     if (ocrModeActive) {
       buildOcrLayer();
@@ -7273,14 +7543,20 @@ async function runOcrForLayer() {
     }
   } catch (err) {
     stopOcrScan();
-    renderOcrSidebarMessage('Text extraction failed');
-    showToast('Text extraction failed');
+    if (screenshotImg === srcImg) {
+      renderOcrSidebarMessage('Text extraction failed');
+      showToast('Text extraction failed');
+    }
+  } finally {
+    // Only clear our own callback — a newer scan (other tab) may own it now.
+    if (_ocrProgress === myProgress) _ocrProgress = null;
   }
 }
 
 async function enterOcrMode() {
   if (!screenshotImg || ocrModeActive) return;
   if (editing) cancelText();
+  closeSidebarModes('ocr');
   setActiveTool(null);
   selectedId = null;
   ocrModeActive = true;
@@ -7327,8 +7603,19 @@ function syncOcrModeForTab() {
 }
 
 // ── Text interactions ──
+// Layout-preserving full text: block-relative indentation is reproduced as
+// leading spaces, and a blank line separates lines from different layout
+// blocks (paragraph/region breaks).
 function ocrAllText() {
-  return ocrData ? ocrData.lines.map(l => l.text).join('\n') : '';
+  if (!ocrData) return '';
+  let out = '';
+  let prevBlock;
+  for (const l of ocrData.lines) {
+    if (out) out += (l.block !== undefined && prevBlock !== undefined && l.block !== prevBlock) ? '\n\n' : '\n';
+    out += ' '.repeat(l.indent || 0) + l.text;
+    prevBlock = l.block;
+  }
+  return out;
 }
 function ocrSelectedText() {
   const sel = window.getSelection();
@@ -7358,7 +7645,7 @@ function clearOcrSearch() {
   ocrSearchMatches = []; ocrSearchIndex = -1;
   if (ocrSearchInput) ocrSearchInput.value = '';
   if (ocrSearchCount) ocrSearchCount.textContent = '0/0';
-  // Restore plain text (drop any <mark>s) without losing edits.
+  // Restore plain text (drop any <mark>s).
   if (ocrData) for (const el of ocrLayerEl.children) el.textContent = ocrData.lines[+el.dataset.idx].text;
 }
 function runOcrSearch(q) {
@@ -7436,11 +7723,12 @@ function openOcrNote() {
     expandBtn.classList.toggle('open', open);
     expandBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     expandBtn.title = open ? 'Hide data types' : 'Show data types';
-    // Warm the OCR cache the moment the list opens — expanding is a strong signal
-    // the user is about to check a category, so by the time they click one the
-    // word data is usually already sitting in _redactOcrCache and applyRedactions()
-    // just filters it, instead of paying for OCR startup + recognition on that click.
-    if (open && screenshotImg) ensureRedactOcr(screenshotImg).catch(() => {});
+    // Warm the recognition cache the moment the list opens — expanding is a
+    // strong signal the user is about to check a category, so by the time they
+    // click one the word data is usually already recognized and
+    // applyRedactions() just regex-filters it, instead of paying for OCR
+    // startup + recognition on that click.
+    if (open && screenshotImg) ocrRecognize(screenshotImg).catch(() => {});
   }
   expandBtn.addEventListener('click', () => setExpanded(list.hidden));
 
@@ -7487,8 +7775,573 @@ document.getElementById('ocr-note-save').addEventListener('click', async () => {
 });
 
 // Keep the text layer aligned with the image through scroll (zoomed) + resize.
-canvasArea.addEventListener('scroll', () => { if (ocrModeActive) { positionOcrLayer(); positionOcrScan(); } });
-window.addEventListener('resize', () => { if (ocrModeActive) { positionOcrLayer(); positionOcrScan(); } });
+// Coalesced to one reposition per frame — scroll fires per pixel and each
+// reposition restyles every line.
+let _ocrPosRaf = 0;
+function scheduleOcrReposition() {
+  if (!ocrModeActive || _ocrPosRaf) return;
+  _ocrPosRaf = requestAnimationFrame(() => { _ocrPosRaf = 0; positionOcrLayer(); positionOcrScan(); });
+}
+canvasArea.addEventListener('scroll', scheduleOcrReposition);
+window.addEventListener('resize', scheduleOcrReposition);
 
 // Toggle OCR Mode from the Tools/Capture menu.
 window.electronAPI.onMenuOcrToggle(() => toggleOcrMode());
+
+// Main pre-warms the OCR engine the moment an OCR-mode capture starts, so the
+// worker + WASM core + language model load while the user is still dragging
+// the region — recognition then starts immediately when the capture lands.
+if (window.electronAPI.onOcrWarm) window.electronAPI.onOcrWarm(() => { getOcrWorker().catch(() => {}); });
+
+// ═══ Report Mode — ticket-ready title + description from the capture ═════════════
+// A sidebar-swap mode like OCR/History Mode (body.report-mode → #report-controls).
+// The capture is recognized through the shared ocrRecognize() cache and distilled —
+// deterministically, fully on-device, no AI — into an editable issue summary +
+// description, filed to Jira by the sidebar's single Create button (see the
+// Jira section below). Manual copy workflows use the toolbar Copy button.
+// Nothing here (nor the OCR engine it leans on) loads before first use.
+
+const reportTitleEl    = document.getElementById('report-title');
+const reportDescEl     = document.getElementById('report-desc');
+const reportMetaEl     = document.getElementById('report-sb-meta');
+const reportThumbEl    = document.getElementById('report-sb-thumb-img');
+
+// ── Text generation (pure string heuristics — exported to window for tests) ──
+
+// Clean one OCR line for ticket text. Ticket editors (Jira's especially)
+// auto-convert markdown-ish prefixes on paste (#, -, *, >, "1."), so generated
+// lines drop those triggers; whitespace runs collapse because the column
+// alignment joinWordsSmart preserves for code snips is noise in a
+// proportional-font ticket description.
+function reportCleanLine(line) {
+  return line.replace(/^\s*(?:[#>*+-]+|\d+[.)])\s+/, '').replace(/[ \t]+/g, ' ').trim();
+}
+
+const REPORT_TITLE_MAX = 80;
+
+// First OCR row that reads like real text: at least 3 alphanumerics and a
+// majority of alphanumerics among its non-space characters — skips separator
+// rows ("————"), icon noise ("× ✕ ⚙") and stray punctuation. Longer lines are
+// truncated on a word boundary with an ellipsis. '' when nothing qualifies
+// (the caller falls back to a generic dated title).
+function reportTitleFrom(rows) {
+  for (const raw of rows) {
+    const line = reportCleanLine(raw);
+    if (line.length < 3) continue;
+    const alnum = (line.match(/[\p{L}\p{N}]/gu) || []).length;
+    if (alnum < 3 || alnum / line.replace(/\s/g, '').length < 0.5) continue;
+    if (line.length <= REPORT_TITLE_MAX) return line;
+    const cut = line.slice(0, REPORT_TITLE_MAX + 1);
+    const sp = cut.lastIndexOf(' ');
+    return (sp > REPORT_TITLE_MAX / 2 ? cut.slice(0, sp) : cut.slice(0, REPORT_TITLE_MAX)).trimEnd() + '…';
+  }
+  return '';
+}
+
+// Full cleaned dump: cleaned lines, blank-line runs collapsed to a single
+// paragraph break, noise-only leading/trailing blanks dropped.
+function reportBodyFrom(rows) {
+  const out = [];
+  let pendingBreak = false;
+  for (const raw of rows) {
+    const line = reportCleanLine(raw);
+    if (!line) { pendingBreak = out.length > 0; continue; }
+    if (pendingBreak) { out.push(''); pendingBreak = false; }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+// Flatten buildOcrLineData output into text rows, with a blank row at each
+// geometric paragraph/region break (the same grouping OCR Mode's copy uses).
+function reportRowsFrom(lineData) {
+  const rows = [];
+  let prevBlock;
+  for (const l of lineData) {
+    if (rows.length && l.block !== undefined && prevBlock !== undefined && l.block !== prevBlock) rows.push('');
+    rows.push(l.text);
+    prevBlock = l.block;
+  }
+  return rows;
+}
+
+function reportTimestamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function reportFallbackTitle() { return 'Screenshot report — ' + reportTimestamp(); }
+
+// ── Scan + sidebar state ──
+
+// Recognize the current image and fill this tab's report document. `doc` is
+// captured up front so a result landing after a tab switch still fills the tab
+// it belongs to; UI writes additionally require that tab to still be showing.
+async function runReportScan() {
+  const srcImg = screenshotImg;
+  const doc = reportData;
+  if (!srcImg || !doc) return;
+  doc.meta = 'Scanning…'; // so re-entering mid-scan shows the live status, not ''
+  reportMetaEl.textContent = 'Scanning…';
+  const showing = () => reportModeActive && reportData === doc;
+  const myProgress = (p) => {
+    if (showing()) reportMetaEl.textContent = 'Scanning… ' + Math.min(99, Math.round(p * 100)) + '%';
+  };
+  _ocrProgress = myProgress;
+  let rows = [], meta = 'No text detected';
+  try {
+    const result = await ocrRecognize(srcImg);
+    const lineData = buildOcrLineData(result.lines);
+    rows = reportRowsFrom(lineData);
+    // Clear the meta line on success — block count/confidence are engine
+    // diagnostics. The no-text and failed states below still surface here.
+    if (lineData.length) meta = '';
+  } catch {
+    meta = 'Text extraction failed';
+  } finally {
+    if (_ocrProgress === myProgress) _ocrProgress = null;
+  }
+  doc.meta = meta;
+  const body = reportBodyFrom(rows);
+  if (!doc.titleDirty) doc.title = reportTitleFrom(rows) || reportFallbackTitle();
+  if (!doc.descDirty)  doc.desc  = 'Captured: ' + reportTimestamp() + (body ? '\n\n' + body : '');
+  if (showing()) renderReportSidebar();
+}
+
+// Reflect reportData into the sidebar. Focused fields are left alone (their
+// content already tracks reportData via the input listeners, and assigning
+// .value would drop the caret).
+function renderReportSidebar() {
+  if (!reportData) return;
+  reportMetaEl.textContent = reportData.meta || '';
+  if (document.activeElement !== reportTitleEl) reportTitleEl.value = reportData.title || '';
+  if (document.activeElement !== reportDescEl)  reportDescEl.value  = reportData.desc  || '';
+}
+
+// Entering the mode (or switching to a tab that's in it): refresh the thumbnail
+// and either restore this image's existing document or start a fresh scan.
+function refreshReportSidebar() {
+  try { reportThumbEl.src = exportDataURL(); } catch { /* preview only — non-fatal */ }
+  if (reportData && reportData.img === screenshotImg) { renderReportSidebar(); renderReportJira(); return; }
+  reportData = { img: screenshotImg, title: '', desc: '', meta: '', titleDirty: false, descDirty: false, jiraIssue: null };
+  reportTitleEl.value = ''; reportDescEl.value = '';
+  runReportScan();
+  renderReportJira();
+}
+
+// Debounced refresh of the sidebar's attachment thumbnail while the user
+// annotates in Report Mode. The _exporting flag stops the exportDataURL()
+// call's own render() passes from re-arming the timer in a loop.
+let _reportThumbTimer = 0;
+let _reportThumbExporting = false;
+function scheduleReportThumb() {
+  if (_reportThumbExporting) return;
+  clearTimeout(_reportThumbTimer);
+  _reportThumbTimer = setTimeout(() => {
+    if (!reportModeActive || !screenshotImg) return;
+    _reportThumbExporting = true;
+    try { reportThumbEl.src = exportDataURL(); } catch { /* preview only */ }
+    _reportThumbExporting = false;
+  }, 600);
+}
+
+function applyReportChrome() {
+  document.body.classList.toggle('report-mode', reportModeActive);
+  const enterBtn = document.getElementById('tool-report-enter');
+  if (enterBtn) enterBtn.classList.toggle('active', reportModeActive);
+  syncBgToggleUI(); // the BG toggle reflects the mode-local override while in Report Mode
+  // Same as applyOcrChrome(): equal sidebar widths, but bg-off has none at all.
+  positionToolbar();
+}
+
+function enterReportMode() {
+  if (!screenshotImg || reportModeActive) return;
+  if (editing) cancelText();
+  closeSidebarModes('report');
+  setActiveTool(null);
+  selectedId = null;
+  reportModeActive = true;
+  reportBgEnabled = false; // raw screenshot by default (BG toggle re-enables per mode)
+  applyReportChrome();
+  render();
+  refreshReportSidebar();
+}
+
+function exitReportMode() {
+  if (!reportModeActive) return;
+  reportModeActive = false;
+  applyReportChrome();
+  render(); // repaint with the normal background treatment restored
+}
+
+function toggleReportMode() {
+  if (!screenshotImg) return;
+  reportModeActive ? exitReportMode() : enterReportMode();
+}
+
+// Re-establish Report Mode chrome/content for the active tab after a tab switch.
+function syncReportModeForTab() {
+  applyReportChrome();
+  if (reportModeActive) refreshReportSidebar();
+}
+
+// ── Wiring ──
+document.getElementById('tool-report-enter').addEventListener('click', toggleReportMode);
+reportTitleEl.addEventListener('input', () => {
+  if (reportData) { reportData.title = reportTitleEl.value; reportData.titleDirty = true; }
+});
+reportDescEl.addEventListener('input', () => {
+  if (reportData) { reportData.desc = reportDescEl.value; reportData.descDirty = true; }
+});
+
+// ═══ Report Mode → Jira (Create issue) ════════════════════════════════════════
+// The "Create in Jira" card inside the Report sidebar. Three states, swapped by
+// renderReportJira(): connect hint (no account), issue form (connected), and
+// success (issue filed; per-tab via reportData.jiraIssue). All network goes
+// through main's jira.js over IPC and only happens while the user is actually
+// in Report Mode with an account connected — never at startup.
+
+const rjEls = {
+  root:        document.getElementById('report-controls'), // .rj-connected gates the Jira-only fields
+  connectCard: document.getElementById('report-connect-card'),
+  loading:     document.getElementById('rj-loading'),
+  fields:      document.getElementById('report-fields'),
+  project:     document.getElementById('rj-project'),
+  type:        document.getElementById('rj-type'),
+  warn:        document.getElementById('rj-warn'),
+  priorityField: document.getElementById('rj-priority-field'),
+  priority:    document.getElementById('rj-priority'),
+  assigneeField: document.getElementById('rj-assignee-field'),
+  assignee:    document.getElementById('rj-assignee'),
+  reporterField: document.getElementById('rj-reporter-field'),
+  reporter:    document.getElementById('rj-reporter'),
+  labelsField: document.getElementById('rj-labels-field'),
+  labels:      document.getElementById('rj-labels'),
+  componentsField: document.getElementById('rj-components-field'),
+  components:  document.getElementById('rj-components'),
+  env:         document.getElementById('rj-env'),
+  success:     document.getElementById('rj-success'),
+  successKey:  document.getElementById('rj-success-key'),
+  successNote: document.getElementById('rj-success-note'),
+  openIssue:   document.getElementById('rj-open-issue'),
+  again:       document.getElementById('rj-again'),
+  error:       document.getElementById('rj-error'),
+  retry:       document.getElementById('rj-retry'),
+  createBtn:   document.getElementById('report-jira-create'),
+};
+
+// Session caches — one fetch per account/project/type, cleared on (re)connect.
+let rjProjects = null;             // [{id,key,name}] | null = not fetched yet
+const rjTypesCache  = new Map();   // projectId → [{id,name}]
+const rjFieldsCache = new Map();   // "projectId:typeId" → field meta from main
+const rjUsersCache  = new Map();   // projectKey → [{accountId,displayName}]
+let rjEnvInfo = null;              // { appVersion, os } — fetched once
+let rjBusy = false;                // a create is in flight
+let rjLoadGen = 0;                 // invalidates stale async loads (tab/account flips)
+
+function jiraResetCaches() {
+  rjProjects = null;
+  rjTypesCache.clear(); rjFieldsCache.clear(); rjUsersCache.clear();
+  rjLoadGen++;
+}
+
+function rjError(msg, retriable) {
+  rjEls.error.textContent = msg || '';
+  rjEls.error.hidden = !msg;
+  rjEls.retry.hidden = !msg || !retriable;
+}
+
+const rjSelectedProject = () => (rjProjects || []).find(p => p.id === rjEls.project.value) || null;
+
+// Entry point — reflect the connection + per-tab success state into the two
+// cards: the consolidated "Report Information" form (Jira-only fields appear
+// via .rj-connected) and the "Connect to Jira" card (only while disconnected).
+async function renderReportJira() {
+  if (!jiraStatus) {
+    try { jiraStatus = await window.electronAPI.jiraGetStatus(); }
+    catch { jiraStatus = { connected: false }; }
+  }
+  const connected = !!jiraStatus.connected;
+  const issue = reportData && reportData.jiraIssue;
+
+  rjEls.root.classList.toggle('rj-connected', connected);
+  rjEls.connectCard.hidden = connected;
+  rjEls.success.hidden = !issue;
+  rjEls.fields.hidden = !!issue;      // success replaces the form, not the card
+  rjEls.createBtn.hidden = !!issue;   // the ONLY sidebar button — always there otherwise
+  rjError('');
+
+  if (issue) {
+    rjEls.loading.hidden = true;
+    rjEls.successKey.textContent = `${issue.key} created`;
+    rjEls.successNote.textContent = issue.attached
+      ? '' : `The issue was created, but attaching the screenshot failed${issue.attachError ? ': ' + issue.attachError : '.'} Use the toolbar Copy button to copy the image and attach it manually.`;
+    rjEls.successNote.hidden = !!issue.attached;
+    return;
+  }
+
+  if (connected) {
+    rjEls.assignee.disabled = rjEls.reporter.disabled = false;
+    rjLoadProjects();
+  } else {
+    // Full Jira field set stays visible (like Jira's own dialog) but inert:
+    // disabled selects with a placeholder. Create routes to Settings.
+    rjEls.loading.hidden = true;
+    for (const sel of [rjEls.project, rjEls.type, rjEls.assignee, rjEls.reporter]) {
+      sel.disabled = true;
+      sel.innerHTML = '<option value="">—</option>';
+    }
+    rjEls.assigneeField.hidden = false;
+    rjEls.reporterField.hidden = false;
+    rjEls.priorityField.hidden = true;
+    rjEls.labelsField.hidden = true;
+    rjEls.componentsField.hidden = true;
+    rjEls.warn.hidden = true;
+    rjEls.createBtn.disabled = false;
+  }
+}
+
+// ── Form population (lazy, cached, stale-guarded) ──
+
+async function rjLoadProjects() {
+  const gen = ++rjLoadGen;
+  if (!rjProjects) {
+    // Summary/Description stay editable while the Jira pickers load — only the
+    // selects and the Create button are held back.
+    rjEls.project.disabled = rjEls.type.disabled = true;
+    rjEls.createBtn.disabled = true;
+    rjEls.loading.hidden = false;
+    rjEls.loading.textContent = 'Loading projects…';
+    let r;
+    try { r = await window.electronAPI.jiraGetProjects(); }
+    catch { r = { ok: false, message: 'Something went wrong talking to the app process.' }; }
+    if (gen !== rjLoadGen) return; // superseded (tab switch / reconnect)
+    if (!r.ok) { rjEls.loading.hidden = true; rjError(r.message, true); return; }
+    rjProjects = r.projects;
+  }
+  if (!rjProjects.length) {
+    rjEls.loading.hidden = false;
+    rjEls.loading.textContent = 'No Jira projects are visible to your account. Ask a Jira admin for access, then try again.';
+    return;
+  }
+  rjEls.loading.hidden = true;
+  rjEls.project.disabled = rjEls.type.disabled = false;
+
+  const remembered = rjEls.project.value || jiraStatus.lastProjectId;
+  rjEls.project.innerHTML = '';
+  for (const p of rjProjects) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.name} (${p.key})`;
+    rjEls.project.appendChild(opt);
+  }
+  if (remembered && rjProjects.some(p => p.id === remembered)) rjEls.project.value = remembered;
+  await rjLoadTypes();
+}
+
+async function rjLoadTypes() {
+  const project = rjSelectedProject();
+  if (!project) return;
+  const gen = ++rjLoadGen;
+  let types = rjTypesCache.get(project.id);
+  if (!types) {
+    rjEls.type.disabled = true;
+    rjEls.type.innerHTML = '<option>Loading…</option>';
+    let r;
+    try { r = await window.electronAPI.jiraGetIssueTypes(project.id); }
+    catch { r = { ok: false, message: 'Something went wrong talking to the app process.' }; }
+    if (gen !== rjLoadGen) return;
+    rjEls.type.disabled = false;
+    if (!r.ok) { rjEls.type.innerHTML = ''; rjError(r.message, true); return; }
+    types = r.issueTypes;
+    rjTypesCache.set(project.id, types);
+  }
+  const remembered = jiraStatus.lastIssueTypeId;
+  rjEls.type.innerHTML = '';
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.name;
+    rjEls.type.appendChild(opt);
+  }
+  if (!types.length) { rjError('This project has no issue types you can create.', false); return; }
+  // Prefer the last-used type, else "Bug" (this is a bug-report flow), else first.
+  const bug = types.find(t => /^bug$/i.test(t.name));
+  if (remembered && types.some(t => t.id === remembered)) rjEls.type.value = remembered;
+  else if (bug) rjEls.type.value = bug.id;
+  await rjLoadFields();
+}
+
+// Which optional fields exist for (project, issue type) — and an early warning
+// for required fields Lumshot can't fill (instead of a failed create later).
+async function rjLoadFields() {
+  const project = rjSelectedProject();
+  const typeId = rjEls.type.value;
+  if (!project || !typeId) return;
+  const gen = ++rjLoadGen;
+  const cacheKey = `${project.id}:${typeId}`;
+  let meta = rjFieldsCache.get(cacheKey);
+  if (!meta) {
+    let r;
+    try { r = await window.electronAPI.jiraGetFieldMeta(project.id, typeId); }
+    catch { r = { ok: false, message: 'Something went wrong talking to the app process.' }; }
+    if (gen !== rjLoadGen) return;
+    // Field metadata is an enhancement — if it fails, keep the basic form usable.
+    meta = r.ok ? r : { hasPriority: false, priorities: [], hasLabels: true, hasAssignee: false, components: [], missingRequired: [] };
+    rjFieldsCache.set(cacheKey, meta);
+  }
+
+  rjEls.warn.hidden = !meta.missingRequired || !meta.missingRequired.length;
+  if (!rjEls.warn.hidden) {
+    rjEls.warn.textContent = `Heads up: this issue type requires ${meta.missingRequired.join(', ')}, which Lumshot can't fill — creating may fail. Pick another type or set a default in Jira.`;
+  }
+
+  rjEls.priorityField.hidden = !meta.hasPriority || !meta.priorities.length;
+  if (!rjEls.priorityField.hidden) {
+    rjEls.priority.innerHTML = '<option value="">Default</option>';
+    for (const p of meta.priorities) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      rjEls.priority.appendChild(opt);
+    }
+  }
+
+  rjEls.labelsField.hidden = !meta.hasLabels;
+
+  rjEls.componentsField.hidden = !meta.components.length;
+  rjEls.components.innerHTML = '';
+  for (const c of meta.components) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = c.id;
+    label.append(cb, document.createTextNode(c.name));
+    rjEls.components.appendChild(label);
+  }
+
+  rjEls.assigneeField.hidden = !meta.hasAssignee;
+  if (!rjEls.assigneeField.hidden) rjEls.assignee.innerHTML = '<option value="">Automatic</option>';
+  rjEls.reporterField.hidden = !meta.hasReporter;
+  if (!rjEls.reporterField.hidden) rjEls.reporter.innerHTML = '<option value="">You' + (jiraStatus && jiraStatus.displayName ? ` (${jiraStatus.displayName})` : '') + '</option>';
+  if (!rjEls.assigneeField.hidden || !rjEls.reporterField.hidden) rjLoadUsers();
+
+  rjEls.createBtn.disabled = rjBusy; // pickers ready — the form is submittable
+}
+
+// Assignable users for the Assignee/Reporter pickers (one fetch per project).
+async function rjLoadUsers() {
+  const project = rjSelectedProject();
+  if (!project) return;
+  let users = rjUsersCache.get(project.key);
+  if (!users) {
+    let r;
+    try { r = await window.electronAPI.jiraGetUsers(project.key); }
+    catch { r = { ok: false }; }
+    if (!r.ok) return; // leave the defaults — both pickers are optional sugar
+    users = r.users;
+    rjUsersCache.set(project.key, users);
+  }
+  const fill = (select, defaultLabel) => {
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = `<option value="">${defaultLabel}</option>`;
+    for (const u of users) {
+      const opt = document.createElement('option');
+      opt.value = u.accountId;
+      opt.textContent = u.displayName;
+      select.appendChild(opt);
+    }
+    if (current && users.some(u => u.accountId === current)) select.value = current;
+  };
+  if (!rjEls.assigneeField.hidden) fill(rjEls.assignee, 'Automatic');
+  if (!rjEls.reporterField.hidden) {
+    fill(rjEls.reporter, 'You' + (jiraStatus && jiraStatus.displayName ? ` (${jiraStatus.displayName})` : ''));
+  }
+}
+
+// ── Environment block (optional description footer) ──
+async function rjEnvBlock() {
+  if (!rjEnvInfo) {
+    try { rjEnvInfo = await window.electronAPI.jiraGetEnv(); } catch { rjEnvInfo = {}; }
+  }
+  const lines = ['Environment:'];
+  if (rjEnvInfo.appVersion) lines.push(`Lumshot ${rjEnvInfo.appVersion}`);
+  if (rjEnvInfo.os) lines.push(rjEnvInfo.os);
+  lines.push(`Screen ${window.screen.width}×${window.screen.height} @ ${window.devicePixelRatio}x`);
+  if (screenshotImg) lines.push(`Capture ${screenshotImg.naturalWidth}×${screenshotImg.naturalHeight}px`);
+  lines.push(`Captured ${reportTimestamp()}`);
+  return lines.join('\n');
+}
+
+// ── Create ──
+async function rjCreateIssue() {
+  if (rjBusy || !screenshotImg) return;
+  // Not connected yet: the button doubles as the on-ramp to Settings.
+  if (!jiraStatus || !jiraStatus.connected) {
+    openSettingsPanel('integrations');
+    showToast('Connect your Jira account to create issues');
+    return;
+  }
+  const summary = reportTitleEl.value.trim();
+  if (!summary) { rjError('Enter a summary first.', false); reportTitleEl.focus(); return; }
+  const project = rjSelectedProject();
+  const typeId = rjEls.type.value;
+  if (!project || !typeId) { rjError('Pick a project and an issue type first.', false); return; }
+
+  rjBusy = true;
+  rjError('');
+  const btnLabel = rjEls.createBtn.querySelector('span');
+  rjEls.createBtn.disabled = true;
+  btnLabel.textContent = 'Creating…';
+
+  let description = reportDescEl.value.trim();
+  if (rjEls.env.checked) {
+    const env = await rjEnvBlock();
+    description = description ? description + '\n\n' + env : env;
+  }
+
+  const payload = {
+    projectId: project.id,
+    issueTypeId: typeId,
+    summary,
+    description,
+    priorityId: rjEls.priorityField.hidden ? null : (rjEls.priority.value || null),
+    assigneeAccountId: rjEls.assigneeField.hidden ? null : (rjEls.assignee.value || null),
+    reporterAccountId: rjEls.reporterField.hidden ? null : (rjEls.reporter.value || null),
+    labels: rjEls.labelsField.hidden ? [] : rjEls.labels.value.split(',').map(s => s.trim()).filter(Boolean),
+    componentIds: [...rjEls.components.querySelectorAll('input:checked')].map(cb => cb.value),
+    imageDataUrl: exportDataURL(),
+  };
+
+  let r;
+  try { r = await window.electronAPI.jiraCreateIssue(payload); }
+  catch { r = { ok: false, message: 'Something went wrong talking to the app process.' }; }
+
+  rjBusy = false;
+  rjEls.createBtn.disabled = false;
+  btnLabel.textContent = 'Create';
+
+  if (r && r.ok) {
+    if (reportData) reportData.jiraIssue = { key: r.key, url: r.url, attached: r.attached, attachError: r.attachError };
+    jiraStatus = null;        // refresh lastProjectId/lastIssueTypeId next render
+    renderReportJira();
+    showToast(`${r.key} created`);
+  } else {
+    rjError((r && r.message) || 'Could not create the issue.', false);
+  }
+}
+
+// ── Wiring ──
+rjEls.project.addEventListener('change', () => { rjError(''); rjLoadTypes(); });
+rjEls.type.addEventListener('change', () => { rjError(''); rjLoadFields(); });
+rjEls.retry.addEventListener('click', () => { rjError(''); rjLoadProjects(); });
+rjEls.createBtn.addEventListener('click', rjCreateIssue);
+document.getElementById('rj-open-settings').addEventListener('click', () => openSettingsPanel('integrations'));
+rjEls.openIssue.addEventListener('click', () => {
+  const issue = reportData && reportData.jiraIssue;
+  if (issue) window.electronAPI.jiraOpenIssue(issue.url);
+});
+rjEls.again.addEventListener('click', () => {
+  if (reportData) reportData.jiraIssue = null;
+  renderReportJira();
+});

@@ -60,6 +60,13 @@
       /* Precision geometry: r1 10 / r2 7 */
       --radius: 10px;
       --radius-sm: 7px;
+
+      /* The right sidebar's width. Every sidebar (#controls, #ocr-controls,
+         #report-controls, #history-controls) is one state of the same panel, so
+         they all read this token — they must never be sized independently or
+         they drift apart (OCR/Report sat at 290 vs 316 until 2026-07-16). The
+         toolbar's right cluster aligns to this too; see positionToolbar(). */
+      --sidebar-w: 316px;
     }
 
     /* Dark theme (default) — "Precision dark".
@@ -595,7 +602,9 @@
     :root.light #titlebar .ab-btn:hover:not(:disabled) { background: #C6CFD2; }
 
     /* Toolbar icon buttons (Open / BG-toggle / Copy / Save-caret) — pixel
-       spec §2.2 / §4.1: 34×34, tool-surface fill, hairline border. */
+       spec §2.2 / §4.1, at 36×36 (spec said 34; the toolbar settled on a
+       uniform 36px square, matching .tool-btn). Tool-surface fill, hairline
+       border. */
     #annotation-bar .ab-btn {
       display: flex; align-items: center; justify-content: center; gap: 7px;
       width: 36px;
@@ -634,7 +643,7 @@
     #tb-bg-toggle.active:hover:not(:disabled) { background: var(--tb-accent-tint); }
 
     /* "New" — icon + label chip ("+ New"), auto-width instead of the plain
-       icon-only 34×34 square every other toolbar button uses, but same
+       icon-only 36×36 square every other toolbar button uses, but same
        tool-surface fill/border/ink as every other toolbar button. */
     #annotation-bar .ab-btn.new {
       width: auto;
@@ -731,7 +740,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 40px;
+      width: 36px;
       height: 36px;
       border: none;
       border-radius: 8px;
@@ -895,33 +904,10 @@
     #ann-crop-opts .crop-action.confirm { color: var(--tb-accent, var(--accent)); }
 
 
-    /* Shape-type picker (Line / Rectangle / Circle) — plain icon buttons shown
-       while the merged Shape tool is active. No group container: each button
-       carries its own hover/active state, so an outer box would just be a
-       redundant second layer of chrome. */
-    #ann-shapetype-opts { display: none; align-items: center; gap: 12px; }
-    .shapetype-seg {
-      display: inline-flex;
-      gap: 3px;
-    }
-    .shapetype-btn {
-      display: flex; align-items: center; justify-content: center;
-      width: 32px; height: 26px;
-      border: none; background: transparent;
-      border-radius: 7px;
-      color: var(--text-3);
-      cursor: pointer;
-      transition: background 0.12s, color 0.12s;
-    }
-    .shapetype-btn:hover { color: var(--text-2); background: var(--surface-2); }
-    .shapetype-btn.active { background: var(--tb-accent-tint); color: var(--tb-accent); }
-    .shapetype-btn svg { display: block; }
-
     /* Shape colour (Basic Properties): just the compact Color Palette now —
        Fill/Outline/Corner radius/Opacity all moved to Advanced Properties
        (#adv-shape-opts, sidebar) — see [[advanced-properties-redesign]]. */
     #ann-shape-opts { display: none; align-items: center; }
-    .shape-row { display: flex; align-items: center; gap: 7px; }
     /* Arrow options (Basic Properties): just the compact Color Palette. Full
        stroke-colour control + the tail-text toggle live in Advanced
        Properties (#adv-arrow-opts, sidebar). */
@@ -1502,10 +1488,13 @@
     body.ocr-mode #controls { display: none; }
 
     /* Capture History mode — same idea as OCR Mode above, but swaps in
-       #history-controls instead. Takes priority over OCR Mode's own sidebar
-       (history-mode wins if somehow both classes are ever set at once). */
+       #history-controls instead. closeSidebarModes() in editor.js keeps the modes
+       exclusive, so both classes should never be set at once; these rules are the
+       backstop if they ever are. The doubled .history-mode is deliberate — it
+       out-specifies `body.ocr-mode #ocr-controls { display: flex }` below, which
+       would otherwise win on source order and show two sidebars side by side. */
     body.history-mode #controls,
-    body.history-mode #ocr-controls { display: none; }
+    body.history-mode.history-mode #ocr-controls { display: none; }
 
     /* The selectable/editable text layer drawn over the image. */
     #ocr-layer {
@@ -1595,7 +1584,7 @@
        it reads as another state of the same panel, not a different screen. */
     #ocr-controls {
       display: none;
-      width: 290px;
+      width: var(--sidebar-w);
       flex-shrink: 0;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -1660,6 +1649,10 @@
        card-to-card spacing rather than the tighter inter-button gap below. */
     .ocr-sb-btn:first-of-type { margin-top: 15px; }
     .ocr-sb-btn + .ocr-sb-btn { margin-top: 8px; }
+    /* display:flex above would defeat the [hidden] attribute (author styles
+       beat the UA sheet) — used by Report Mode's conditional Create button. */
+    .ocr-sb-btn[hidden] { display: none; }
+    .ocr-sb-btn[hidden] + .ocr-sb-btn { margin-top: 15px; }
     .ocr-sb-btn svg { display: block; flex-shrink: 0; }
     .ocr-sb-btn:disabled { opacity: 0.4; cursor: default; }
     .ocr-sb-btn.primary { border: none; background: var(--accent); color: var(--on-accent); }
@@ -1709,12 +1702,12 @@
 
     /* ─── Capture History sidebar ───────────────────────────────────────────
        Replaces #controls while History Mode is on — same exact width/surface/
-       border/padding as #controls itself (not #ocr-controls' narrower 290px),
+       border/padding as #controls itself (all sidebars share --sidebar-w),
        so it reads as the same sidebar with swapped content, not a different
        panel. */
     #history-controls {
       display: none;
-      width: 316px;
+      width: var(--sidebar-w);
       flex-shrink: 0;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -1726,6 +1719,152 @@
     #history-controls::-webkit-scrollbar { width: 6px; }
     #history-controls::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
     #history-controls::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* ─── Report Mode sidebar ────────────────────────────────────────────────
+       Ticket-ready title + description generated on-device from the capture's
+       OCR text. Same swap pattern as OCR/History Mode: body.report-mode hides
+       #controls and shows #report-controls. Reuses the OCR sidebar's width and
+       shared pieces (.section cards, .ocr-sb-meta, .ocr-sb-btn) so the two
+       text modes read as siblings of the same panel. */
+    body.report-mode #controls { display: none; }
+    /* Doubled .history-mode for the same reason as the #ocr-controls guard above:
+       it must out-specify `body.report-mode #report-controls { display: flex }`. */
+    body.history-mode.history-mode #report-controls { display: none; }
+    #report-controls {
+      display: none;
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 18px 16px 30px;
+    }
+    body.report-mode #report-controls { display: flex; }
+    #report-controls::-webkit-scrollbar { width: 6px; }
+    #report-controls::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+    #report-controls::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+    #report-controls .section + .section { margin-top: 15px; }
+
+    /* Small preview of the annotated render — what "Copy image" will carry.
+       Heights are kept tight so both Copy buttons stay above the fold at
+       normal window heights (the sidebar still scrolls if needed). */
+    .report-sb-thumb {
+      display: flex; align-items: center; justify-content: center;
+      max-height: 110px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+    }
+    :root.dark .report-sb-thumb { background: #121718; border-color: #2C2C31; }
+    :root.light .report-sb-thumb { border-color: #E1E1E3; }
+    .report-sb-thumb img { max-width: 100%; max-height: 110px; display: block; }
+
+    /* Title input: .sb-input look without the watermark field's lock-icon gutter. */
+    #report-title { padding: 9px 11px; }
+
+    /* Description: the .ocr-sb-preview treatment, but editable. */
+    #report-desc {
+      width: 100%;
+      min-height: 120px;
+      max-height: 320px;
+      resize: vertical;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 10px 11px;
+      font-family: var(--font-mono);
+      font-size: 12px; line-height: 1.6;
+      outline: none;
+      transition: border-color 0.12s;
+      word-break: break-word;
+    }
+    :root.dark #report-desc { background: #121718; border-color: #2C2C31; }
+    :root.light #report-desc { border-color: #E1E1E3; }
+    #report-desc:focus { border-color: var(--accent); }
+    #report-desc::placeholder { font-family: var(--font); font-style: italic; color: var(--text-3); }
+    #report-desc::-webkit-scrollbar { width: 6px; }
+    #report-desc::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+    #report-desc::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+    /* ─── Report Mode: Jira card ─────────────────────────────────────────────
+       Compact issue form inside the sidebar. Selects/inputs reuse the
+       .sb-input token treatment; the disclosure reuses .chevron-disclosure. */
+    .rj-fields { display: flex; flex-direction: column; gap: 11px; }
+    .rj-field { display: flex; flex-direction: column; gap: 6px; }
+    /* These carry author display values, which would defeat the [hidden]
+       attribute (author styles beat the UA sheet) — restate it. */
+    .rj-fields[hidden], .rj-field[hidden], .rj-link-btn[hidden] { display: none; }
+    .rj-label { font-size: 11.5px; color: var(--text-2); font-weight: 500; }
+    /* Selects and single-line inputs share one 36px control height so the form
+       reads as one system. Styling a <select>'s background/border makes
+       Chromium drop its native arrow, so a custom chevron is drawn instead —
+       without it nothing says "dropdown". (Theme overrides below must use
+       background-COLOR, or they'd wipe the chevron background-image.) */
+    .rj-select {
+      width: 100%;
+      height: 36px;
+      flex: none; /* the global `select { flex: 1 }` rule would let the column-flex .rj-field size it (≈18px) instead of the height above */
+      box-sizing: border-box;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 0 30px 0 11px;
+      font-size: 12.5px;
+      font-family: var(--font);
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.12s;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238A9295' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 11px center;
+      background-size: 10px 6px;
+    }
+    :root.dark .rj-select { background-color: #121718; border-color: #2C2C31; }
+    :root.light .rj-select { border-color: #E1E1E3; }
+    .rj-select:focus { border-color: var(--accent); }
+    .rj-select:disabled { opacity: 0.5; cursor: default; }
+    .rj-input { padding: 0 11px; height: 36px; box-sizing: border-box; }
+
+    .rj-hint, .rj-loading {
+      font-size: 12px; line-height: 1.5; color: var(--text-3);
+    }
+    .rj-hint { margin-bottom: 10px; }
+    .rj-note { font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
+    .rj-note.error { color: #E5534B; margin-top: 10px; }
+
+    /* Text-styled action link (Connect in Settings / Open in Jira / again). */
+    .rj-link-btn {
+      display: block;
+      background: none; border: none; padding: 0;
+      font-family: var(--font); font-size: 12.5px; font-weight: 600;
+      color: var(--accent-text); cursor: pointer; text-align: left;
+    }
+    .rj-link-btn:hover { text-decoration: underline; }
+    .rj-link-btn + .rj-link-btn { margin-top: 8px; }
+
+    /* (No connection-based field gating: the form always shows the full Jira
+       field set, disabled with a "—" placeholder while disconnected.) */
+
+    .rj-components { display: flex; flex-direction: column; gap: 8px; }
+    .rj-components label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--text-2); cursor: pointer;
+    }
+    .rj-components input { accent-color: var(--accent); margin: 0; }
+
+    .rj-env-row { margin-top: 2px; }
+
+    .rj-success-key {
+      font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+      color: var(--accent-text); margin-bottom: 6px;
+    }
+    .rj-success-note { font-size: 11.5px; line-height: 1.45; color: var(--text-3); margin-bottom: 8px; }
 
     .hist-sb-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -1783,9 +1922,9 @@
       color: var(--text-2);
     }
 
-    /* ─── Right: controls panel (design: "Inspector", 290px) ───────────────── */
+    /* ─── Right: controls panel (design: "Inspector") ──────────────────────── */
     #controls {
-      width: 316px;
+      width: var(--sidebar-w);
       flex-shrink: 0;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -2720,6 +2859,15 @@
     }
     .stg-btn-outline:hover { background: var(--surface-3); }
 
+    /* ── Integrations (Jira) ── */
+    .stg-jira-fields { display: flex; flex-direction: column; gap: 8px; }
+    /* Text-styled inline link button (opens an external page via main). */
+    .stg-inline-link {
+      background: none; border: none; padding: 0; cursor: pointer;
+      font: inherit; color: var(--ac); font-weight: 550;
+    }
+    .stg-inline-link:hover { text-decoration: underline; }
+
     /* ── License tab ── */
     .stg-lic-top { padding: 24px 22px; }
     .stg-lic-eyebrow { font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 1.35px; text-transform: uppercase; color: var(--fn); margin-bottom: 6px; }
@@ -3008,56 +3156,98 @@
     <!-- The tool cluster (annotation tools) — centered pill, margin:auto -->
     <div id="ab-tools">
 
-      <!-- Tools: Select | Crop | Arrow | Shape (Line/Rectangle/Circle) | Free Draw | Text | Highlight | Counter | Blur -->
+      <!-- Tools: Select | Crop | Arrow | Line | Rectangle | Circle | Free Draw | Text | Highlight | Counter | Blur
+           Icons come from mixed sources on different viewBox scales, so raw
+           viewBox/stroke-width numbers are NOT comparable between them. Both are
+           normalised to what actually RENDERS in the 20px box (measured with
+           getBBox(), not eyeballed):
+
+             stroke = 1.75px for every stroked icon
+                      -> stroke-width = viewBox_extent / 20 × 1.75
+
+             size   = OPTICAL, not geometric. Equal bounding boxes do NOT look
+                      equal: a square fills its box to the corners and reads
+                      large; a circle touches it at 4 points and reads small. So
+                      each icon's bbox target depends on its shape class:
+                        square / dense    15.00px  rect, crop, blur, draw,
+                                                   ocr-enter, report-enter
+                        diagonal / sparse 15.60px  line, highlight, select
+                        round             15.90px  ellipse, counter
+                        text              16.20px  (sparse; read small at 15.6)
+                        arrow             13.50px  (reads heavy; needs shrinking)
+                      Arrow and text are deliberate outliers — trust the eye over
+                      the formula when they disagree; that's what optical means.
+                      Draw is a diagonal but its dense pencil body reads heavy,
+                      so it sits in the square class, not with line/highlight.
+
+           NOTE: the palette's last two buttons (#tool-ocr-enter, #tool-report-
+           enter) are .tool-btn but carry NO data-tool — they're modes, not tools.
+           Select on `.tool-btn` when auditing icon geometry, or they get missed
+           (which is exactly how they drifted to 16.67px/13.75px once already).
+
+           Each viewBox is a square sized art_units/target×20, centred on the
+           art's own bbox — hence the odd numbers instead of "0 0 256 256".
+           Select/Counter/Blur are fill-only and were scaled by viewBox alone. -->
       <button class="tool-btn" data-tool="select" title="Select & move" aria-label="Select and move tool">
-        <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor">
+        <svg width="20" height="20" viewBox="4.92 4.93 246.17 246.17" fill="currentColor">
           <path d="m220.49 207.8-12.69 12.69a12 12 0 0 1-17 0l-56.57-56.57L115 214.08l-.13.33a15.84 15.84 0 0 1-14.61 9.59h-.78a15.82 15.82 0 0 1-14.41-11L32.8 52.92A15.95 15.95 0 0 1 52.92 32.8L213 85.07a16 16 0 0 1 1.41 29.8l-.33.13-50.16 19.27 56.57 56.56a12 12 0 0 1 0 16.97"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="crop" title="Crop (X)" aria-label="Crop tool">
-        <svg width="20" height="20" viewBox="8 8 224 224" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+        <svg width="20" height="20" viewBox="-10.67 -10.67 277.33 277.33" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="24.3">
           <path d="M64 24v168h168M24 64h40"/>
           <path d="M96 64h96v96m0 32v40"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="arrow" title="Arrow — label optional (A)" aria-label="Arrow tool">
-        <svg width="20" height="20" viewBox="32 32 192 192" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+        <svg width="20" height="20" viewBox="33.19 33.19 189.63 189.63" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16.59">
           <path d="M64 192 192 64M88 64h104v104"/>
         </svg>
       </button>
-      <button class="tool-btn" data-tool="shape" title="Shape — line, rectangle, circle (R)" aria-label="Shape tool">
-        <svg width="20" height="20" viewBox="24 24 208 208" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M99.879 160c-33.164 0-60.121-26.957-60.121-60.121s26.957-60.121 60.12-60.121c33.164 0 60.122 26.957 60.122 60.121"/>
-          <path d="M216.242 99.879H99.879v116.364h116.363z"/>
+      <button class="tool-btn" data-tool="line" title="Line (L)" aria-label="Line tool">
+        <svg width="20" height="20" viewBox="15.18 15.18 225.64 225.64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="19.74">
+          <circle cx="64" cy="192" r="24"/>
+          <circle cx="192" cy="64" r="24"/>
+          <path d="m175.03 80.97-94.06 94.06"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="rect" title="Rectangle (R)" aria-label="Rectangle tool">
+        <svg width="20" height="20" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="22.5">
+          <rect x="32" y="48" width="192" height="160" rx="8"/>
+        </svg>
+      </button>
+      <button class="tool-btn" data-tool="ellipse" title="Circle (C)" aria-label="Circle tool">
+        <svg width="20" height="20" viewBox="7.25 7.25 241.51 241.51" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="21.13">
+          <circle cx="128" cy="128" r="96"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="draw" title="Free Draw (D)" aria-label="Free draw tool">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="20" height="20" viewBox="0 -0.56 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 20h9"/>
           <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="text" title="Text (T)" aria-label="Text tool">
-        <svg width="20" height="20" viewBox="8 40 240 168" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+        <svg width="20" height="20" viewBox="-9.33 -9.33 266.67 266.67" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="23.33">
           <path d="M144 192 80 56 16 192"/>
           <ellipse cx="200" cy="164" rx="32" ry="28"/>
           <path d="M232 192v-60c0-15.46-14.33-28-32-28-9.56 0-18.14 2.18-24 8m-50.82 40H34.82"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="highlight" title="Highlight (H)" aria-label="Highlight tool">
-        <svg width="20" height="20" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+        <svg width="20" height="20" viewBox="-7.59 -27.59 287.18 287.18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="25.13">
           <path d="m88 128-64 64 72 24 40-40"/>
           <path d="m184 160-26.34 26.34a8 8 0 0 1-11.32 0l-68.68-68.68a8 8 0 0 1 0-11.32L104 80"/>
           <path d="m248 112-50.34 50.34a8 8 0 0 1-11.32 0l-84.68-84.68a8 8 0 0 1 0-11.32L152 16"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="counter" title="Counter (N)" aria-label="Counter tool">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="20" height="20" viewBox="-0.58 -0.58 25.16 25.16" fill="currentColor">
           <path d="M12 22a9.7 9.7 0 0 1-3.9-.788 10.1 10.1 0 0 1-3.175-2.137q-1.35-1.35-2.137-3.175A9.8 9.8 0 0 1 2 12q0-2.075.788-3.9a10.1 10.1 0 0 1 2.137-3.175Q6.273 3.575 8.1 2.788A9.7 9.7 0 0 1 12 2q2.073 0 3.9.788a10.1 10.1 0 0 1 3.175 2.137q1.348 1.35 2.138 3.175A9.7 9.7 0 0 1 22 12a9.8 9.8 0 0 1-.788 3.9 10 10 0 0 1-2.137 3.175 10.2 10.2 0 0 1-3.175 2.138A9.7 9.7 0 0 1 12 22m0-2q3.35 0 5.675-2.325T20 12t-2.325-5.675T12 4 6.325 6.325 4 12t2.325 5.675T12 20m-.5-11v7q0 .425.288.713T12.5 17q.424 0 .713-.288A.96.96 0 0 0 13.5 16V8a.97.97 0 0 0-.288-.712A.97.97 0 0 0 12.5 7h-2a.97.97 0 0 0-.712.288A.97.97 0 0 0 9.5 8q0 .424.288.713A.96.96 0 0 0 10.5 9z"/>
         </svg>
       </button>
       <button class="tool-btn" data-tool="blur" title="Blur (B)" aria-label="Blur tool">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <svg width="20" height="20" viewBox="-2.17 -2.67 29.33 29.33" fill="currentColor">
           <path d="M19.835 15.141q.327-.333.327-.825t-.327-.825a1.1 1.1 0 0 0-.808-.333q-.48 0-.81.333a1.12 1.12 0 0 0-.325.825q.002.489.327.825t.808.333a1.1 1.1 0 0 0 .808-.334m0 4.632q.327-.331.327-.825 0-.492-.327-.824a1.1 1.1 0 0 0-.808-.334q-.48-.002-.81.334a1.13 1.13 0 0 0-.325.824q.002.489.327.826t.808.332.808-.333m0-9.263q.327-.333.327-.825t-.327-.824a1.1 1.1 0 0 0-.808-.334q-.48-.001-.81.334a1.12 1.12 0 0 0-.325.824q.002.49.327.826t.808.332a1.1 1.1 0 0 0 .808-.333m2.995-.42a.56.56 0 0 0 .17-.405.56.56 0 0 0-.17-.405.54.54 0 0 0-.795 0 .56.56 0 0 0-.17.405q0 .232.17.406a.54.54 0 0 0 .795 0m-2.995-4.21q.327-.334.327-.826t-.327-.825a1.1 1.1 0 0 0-.808-.333q-.48-.002-.81.333a1.12 1.12 0 0 0-.325.825q.002.489.327.825t.808.333.808-.333m2.995 8.842a.56.56 0 0 0 .17-.405.56.56 0 0 0-.17-.405.54.54 0 0 0-.795 0 .56.56 0 0 0-.17.405q0 .232.17.405a.54.54 0 0 0 .795 0m-7.946 8.105a.56.56 0 0 0 .17-.405.56.56 0 0 0-.17-.405.54.54 0 0 0-.795 0 .56.56 0 0 0-.17.405q0 .232.17.405a.54.54 0 0 0 .795 0m0-20.842a.56.56 0 0 0 .17-.405.56.56 0 0 0-.17-.405.54.54 0 0 0-.795 0 .56.56 0 0 0-.17.405q0 .232.17.405a.54.54 0 0 0 .795 0m.412 3.894q.326-.333.326-.825a1.13 1.13 0 0 0-.327-.825 1.1 1.1 0 0 0-.809-.333q-.48-.002-.809.333a1.12 1.12 0 0 0-.326.825q.002.489.327.825t.808.333a1.1 1.1 0 0 0 .809-.334m.397 9.669q.497-.506.497-1.23t-.497-1.23a1.64 1.64 0 0 0-1.206-.507 1.62 1.62 0 0 0-1.206.507q-.499.51-.496 1.23.002.72.496 1.23.493.511 1.207.507a1.64 1.64 0 0 0 1.205-.508m0-4.63q.497-.51.497-1.232 0-.723-.497-1.23a1.63 1.63 0 0 0-1.206-.507q-.708 0-1.206.508a1.68 1.68 0 0 0-.496 1.23q.002.72.496 1.23.493.51 1.207.506a1.64 1.64 0 0 0 1.205-.506m-.397 8.857q.327-.334.327-.826a1.13 1.13 0 0 0-.327-.824 1.1 1.1 0 0 0-.809-.334q-.48-.001-.809.334a1.12 1.12 0 0 0-.326.824q.002.49.327.826t.808.332q.484-.002.809-.332m-9.067-13.1q1.959-2.258 4.853-2.691.483-.058.808-.406.327-.347.327-.84a1.1 1.1 0 0 0-.34-.824.96.96 0 0 0-.823-.275Q7.222 2.1 4.61 5.039 2 7.978 2 12t2.61 6.962q2.612 2.94 6.443 3.401a.96.96 0 0 0 .823-.274q.34-.333.34-.826 0-.494-.327-.84a1.3 1.3 0 0 0-.808-.405q-2.895-.434-4.853-2.692T4.27 12t1.958-5.326"/>
         </svg>
       </button>
@@ -3066,9 +3256,18 @@
 
       <!-- OCR: enter OCR Mode (extract text). Redaction now lives in the right
            sidebar (Redact sensitive data section), not the toolbar. -->
-      <button class="tool-btn" id="tool-ocr-enter" title="OCR Mode — extract text (Ctrl+Shift+O)" aria-label="OCR mode — extract text">
-        <svg width="20" height="20" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+      <button class="tool-btn" id="tool-ocr-enter" title="OCR (O)" aria-label="OCR mode — extract text">
+        <svg width="20" height="20" viewBox="10.67 10.67 234.67 234.67" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="20.53">
           <path d="M176 40h40v40M80 216H40v-40m176 0v40h-40M40 80V40h40m0 40h96v96H80z"/>
+        </svg>
+      </button>
+      <!-- Report: enter Report Mode (ticket-ready title + description from the
+           capture's text; copy image and text separately into a PM tool). -->
+      <button class="tool-btn" id="tool-report-enter" title="Jira (J)" aria-label="Report mode — file a Jira issue from this capture">
+        <svg width="20" height="20" viewBox="1.8 -3.14 49.33 49.33" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5.5 22.972a8.736 8.736 0 0 0 8.736 8.736h2.056v2.056a8.736 8.736 0 0 0 8.736 8.736h0V22.972Z"/>
+          <path d="M14.236 14.236a8.736 8.736 0 0 0 8.736 8.736h2.056v2.056a8.736 8.736 0 0 0 8.736 8.736h0V14.236Z"/>
+          <path d="M22.972 5.5a8.736 8.736 0 0 0 8.736 8.736h2.056v2.056a8.736 8.736 0 0 0 8.736 8.736h0V5.5Z"/>
         </svg>
       </button>
       </div><!-- /#ab-tools -->
@@ -3118,33 +3317,6 @@
           <button class="blur-hardness-btn" data-hardness="10" title="Soft (10px)">Soft</button>
           <button class="blur-hardness-btn active" data-hardness="20" title="Medium (20px)">Medium</button>
           <button class="blur-hardness-btn" data-hardness="40" title="Hard (40px)">Hard</button>
-        </div>
-      </div>
-
-      <!-- Shape-type picker — shown whenever the merged Shape tool is active.
-           Switches which primitive (Line / Rectangle / Circle) the tool draws.
-           Shares [data-shape] wiring with the Advanced Properties segmented
-           control below (see shapeTypeBtns in editor.js) — either one can
-           switch the primitive and both stay in sync. -->
-      <div id="ann-shapetype-opts">
-        <div class="shape-row">
-          <div class="shapetype-seg" role="group" aria-label="Shape type">
-            <button class="shapetype-btn" data-shape="line" title="Line (L)" aria-label="Line shape">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
-                <line x1="4" y1="20" x2="20" y2="4"/>
-              </svg>
-            </button>
-            <button class="shapetype-btn" data-shape="rect" title="Rectangle (R)" aria-label="Rectangle shape">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="4" y="6" width="16" height="12" rx="1.5"/>
-              </svg>
-            </button>
-            <button class="shapetype-btn" data-shape="ellipse" title="Circle (C)" aria-label="Circle shape">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <circle cx="12" cy="12" r="8"/>
-              </svg>
-            </button>
-          </div>
         </div>
       </div>
 
@@ -3466,39 +3638,15 @@
           </div>
         </div>
 
-        <!-- Shape (Line/Rectangle/Circle): a segmented control to switch
-             primitive — shares [data-shape] wiring with the toolbar's own
-             picker (see shapeTypeBtns in editor.js), so either one switches
-             it and both stay in sync — then the properties for whichever
-             primitive is current. The colour Basic Properties already shows
-             (the shape's stroke/line colour) gets the full picker here, same
-             rule as Crop/Arrow; Fill (a secondary colour) gets the compact
-             palette instead, since the full picker is a single shared
-             instance and can only dock one place at a time. -->
+        <!-- Shape properties. Line, Rectangle and Circle are separate tools, so
+             which variant below opens follows the active tool / selected object
+             (see currentShapeKind in editor.js) — there's no type picker.
+             The colour Basic Properties already shows (the shape's stroke/line
+             colour) gets the full picker here, same rule as Crop/Arrow; Fill (a
+             secondary colour) gets the compact palette instead, since the full
+             picker is a single shared instance and can only dock one place at
+             a time. -->
         <div id="adv-shape-opts" class="adv-tool-opts">
-          <div class="seg" id="adv-shapetype-seg" role="group" aria-label="Shape type">
-            <button class="seg-btn" data-shape="line">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <circle cx="5" cy="19" r="1.8" fill="currentColor" stroke="none"/>
-                <line x1="6.7" y1="17.3" x2="17.3" y2="6.7"/>
-                <circle cx="19" cy="5" r="1.8" fill="currentColor" stroke="none"/>
-              </svg>
-              <span>Line</span>
-            </button>
-            <button class="seg-btn" data-shape="rect">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="4" y="4" width="16" height="16" rx="2"/>
-              </svg>
-              <span>Rect</span>
-            </button>
-            <button class="seg-btn" data-shape="ellipse">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="9"/>
-              </svg>
-              <span>Circle</span>
-            </button>
-          </div>
-
           <!-- Line: stroke is mandatory (it IS the shape), so "Outline" here is
                a plain header — no on/off toggle, unlike Rect/Circle below. -->
           <div id="adv-shape-line-opts" class="adv-shape-variant">
@@ -4008,6 +4156,109 @@
 
   </aside>
 
+  <!-- Report Mode sidebar — swaps in for #controls while Report Mode is on
+       (body.report-mode, same pattern as #ocr-controls above). Exactly two
+       cards: "Report Information" (the whole issue form — Jira-only fields
+       carry .rj-jira and appear only while #report-controls has .rj-connected,
+       set by renderReportJira()) and "Connect to Jira" (shown only while no
+       account is connected). Summary/description are generated on-device from
+       the capture's OCR text and stay editable; the annotated screenshot is
+       the attachment. -->
+  <aside id="report-controls">
+
+    <div class="section" id="report-info">
+      <div class="section-label">Report Information</div>
+      <div class="ocr-sb-meta" id="report-sb-meta">Scanning…</div>
+
+      <div class="rj-loading" id="rj-loading" hidden>Loading projects…</div>
+
+      <!-- Field order mirrors Jira's own create dialog: Project, Issue type,
+           Summary, Description, Assignee, Reporter, then the extras. -->
+      <div class="rj-fields" id="report-fields">
+        <!-- Project/type/assignee/reporter are always part of the form (like
+             Jira's own dialog); while no account is connected they render
+             disabled with a "—" placeholder and Create routes to Settings. -->
+        <label class="rj-field">
+          <span class="rj-label">Project</span>
+          <select class="rj-select" id="rj-project"></select>
+        </label>
+        <label class="rj-field">
+          <span class="rj-label">Issue type</span>
+          <select class="rj-select" id="rj-type"></select>
+        </label>
+        <div class="rj-note" id="rj-warn" hidden></div>
+        <label class="rj-field">
+          <span class="rj-label">Summary</span>
+          <input type="text" id="report-title" class="sb-input rj-input" placeholder="Issue summary" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="rj-field">
+          <span class="rj-label">Description</span>
+          <textarea id="report-desc" placeholder="No text detected — describe the issue here." spellcheck="false"></textarea>
+        </label>
+        <label class="rj-field" id="rj-assignee-field">
+          <span class="rj-label">Assignee</span>
+          <select class="rj-select" id="rj-assignee"></select>
+        </label>
+        <label class="rj-field" id="rj-reporter-field">
+          <span class="rj-label">Reporter</span>
+          <select class="rj-select" id="rj-reporter"></select>
+        </label>
+        <label class="rj-field" id="rj-priority-field" hidden>
+          <span class="rj-label">Priority</span>
+          <select class="rj-select" id="rj-priority"></select>
+        </label>
+        <label class="rj-field" id="rj-labels-field" hidden>
+          <span class="rj-label">Labels</span>
+          <input type="text" class="sb-input rj-input" id="rj-labels" placeholder="comma, separated" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="rj-field" id="rj-components-field" hidden>
+          <span class="rj-label">Components</span>
+          <div class="rj-components" id="rj-components"></div>
+        </div>
+        <label class="toggle-row rj-env-row" title="Appends Lumshot/OS versions, screen info and capture time to the description">
+          <span>Include environment info</span>
+          <label class="switch">
+            <input type="checkbox" id="rj-env" checked>
+            <span class="slider-track"></span>
+          </label>
+        </label>
+        <div class="rj-field">
+          <span class="rj-label">Attachment</span>
+          <div class="report-sb-thumb"><img id="report-sb-thumb-img" alt="Capture preview"></div>
+        </div>
+      </div>
+
+      <div id="rj-success" hidden>
+        <div class="rj-success-key" id="rj-success-key"></div>
+        <div class="rj-success-note" id="rj-success-note" hidden></div>
+        <button class="rj-link-btn" id="rj-open-issue" type="button">Open in Jira ↗</button>
+        <button class="rj-link-btn" id="rj-again" type="button">File another issue</button>
+      </div>
+
+      <div class="rj-note error" id="rj-error" hidden></div>
+      <button class="rj-link-btn" id="rj-retry" type="button" hidden style="margin-top:8px;">Try again</button>
+    </div>
+
+    <!-- Shown only while no Jira account is connected; disappears once
+         connected, leaving just the Report Information card above. -->
+    <div class="section" id="report-connect-card" hidden>
+      <div class="section-label">Connect to Jira</div>
+      <div class="rj-hint">Connect your Jira account to file this report as an issue — screenshot attached, one click.</div>
+      <button class="rj-link-btn" id="rj-open-settings" type="button">Connect Jira in Settings…</button>
+    </div>
+
+    <!-- The sidebar's ONLY button. Connected: creates the issue (screenshot
+         attached). Disconnected: routes to Settings → Integrations. The
+         toolbar Copy button / Ctrl+C still cover manual copy workflows. -->
+    <button class="ocr-sb-btn primary" id="report-jira-create" title="Create the issue in Jira with the screenshot attached" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/>
+      </svg>
+      <span>Create</span>
+    </button>
+
+  </aside>
+
   <!-- Capture History sidebar — swaps in for #controls (and takes priority
        over #ocr-controls) while History Mode is on, see body.history-mode
        rules above. Same container/section language as the other sidebars;
@@ -4048,6 +4299,10 @@
         <button class="stg-nav-item" data-tab="ai">
           <span class="stg-nav-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.8l1.5 3.4 3.4 1.5-3.4 1.5-1.5 3.4-1.5-3.4L4.6 7.7l3.4-1.5z"/><path d="M15 13.5l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7z"/></svg></span>
           <span>Capture to AI</span>
+        </button>
+        <button class="stg-nav-item" data-tab="integrations">
+          <span class="stg-nav-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12l-1.8 1.8a3 3 0 0 1-4.2-4.2L5.6 6a3 3 0 0 1 4.2 0"/><path d="M12 8l1.8-1.8a3 3 0 0 1 4.2 4.2L14.4 14a3 3 0 0 1-4.2 0"/></svg></span>
+          <span>Integrations</span>
         </button>
         <button class="stg-nav-item" data-tab="shortcuts">
           <span class="stg-nav-icon"><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.3" y="6" width="15.4" height="9.5" rx="1.8"/><path d="M5.4 9.3h.01M8.1 9.3h.01M10.8 9.3h.01M13.5 9.3h.01M6.2 12.4h7.6"/></svg></span>
@@ -4204,11 +4459,26 @@
                 <div class="stg-row-title">Built-in targets</div>
                 <div class="stg-row-desc" style="margin-bottom:12px;">LumShot already recognizes these apps.</div>
                 <div class="stg-chip-row">
-                  <span class="stg-chip">Cursor</span>
                   <span class="stg-chip">Claude</span>
                   <span class="stg-chip">ChatGPT</span>
                   <span class="stg-chip">Codex</span>
+                  <span class="stg-chip">Kimi</span>
+                  <span class="stg-chip">Grok</span>
+                  <span class="stg-chip">Perplexity</span>
+                  <span class="stg-chip">DeepSeek</span>
+                  <span class="stg-chip">Gemini</span>
+                  <span class="stg-chip">Chatbox</span>
+                  <span class="stg-chip">LM Studio</span>
+                  <span class="stg-chip">Jan</span>
+                  <span class="stg-chip">Msty</span>
+                  <span class="stg-chip">Cherry Studio</span>
+                  <span class="stg-chip">Cursor</span>
                   <span class="stg-chip">VS Code</span>
+                  <span class="stg-chip">Windsurf</span>
+                  <span class="stg-chip">Zed</span>
+                  <span class="stg-chip">Antigravity</span>
+                  <span class="stg-chip">Trae</span>
+                  <span class="stg-chip">Kiro</span>
                 </div>
               </div>
               <div class="stg-divider"></div>
@@ -4217,6 +4487,62 @@
                 <div class="stg-row-desc multi" style="margin-bottom:9px;">Extra apps to treat as AI targets, on top of the built-in list. Comma-separated program names.</div>
                 <input id="sp-ai-custom-apps" type="text" class="stg-input mono" placeholder="e.g. myeditor.exe, sometool.exe">
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══ Integrations (Jira) ═══
+             Connect a Jira Cloud account for Report Mode's "Create issue".
+             Auth = the user's own Atlassian API token (email + token, Basic
+             auth). The token goes straight to main over IPC, is encrypted with
+             safeStorage, and never comes back to this renderer — see jira.js. -->
+        <section class="stg-section" id="stg-section-integrations">
+          <div>
+            <div class="stg-group-label">Jira</div>
+            <div class="stg-card">
+
+              <!-- Disconnected: the connect form -->
+              <div id="stg-jira-form">
+                <div class="stg-row">
+                  <div class="stg-row-title">Connect Jira Cloud</div>
+                  <div class="stg-row-desc multi" style="margin-bottom:12px;">
+                    Create issues straight from Report Mode. Lumshot talks to Jira
+                    directly from this computer — your API token is encrypted on
+                    this device and never sent anywhere else.
+                    <button class="stg-inline-link" id="stg-jira-token-link" type="button">Create an API token ↗</button>
+                  </div>
+                  <div class="stg-jira-fields">
+                    <input type="text" class="stg-input" id="stg-jira-site" placeholder="your-team.atlassian.net" autocomplete="off" spellcheck="false">
+                    <input type="text" class="stg-input" id="stg-jira-email" placeholder="you@company.com" autocomplete="off" spellcheck="false">
+                    <input type="password" class="stg-input" id="stg-jira-token" placeholder="API token" autocomplete="off">
+                  </div>
+                  <div class="sp-note" id="stg-jira-error" hidden></div>
+                  <div class="stg-control-row" style="margin-top:12px;">
+                    <button class="stg-btn-accent" id="stg-jira-connect">Connect</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Connected: status + disconnect -->
+              <div id="stg-jira-connected" hidden>
+                <div class="stg-row-flex">
+                  <div class="stg-row-text">
+                    <div class="stg-row-title" id="stg-jira-who">Connected</div>
+                    <div class="stg-row-desc" id="stg-jira-site-label"></div>
+                  </div>
+                  <button class="stg-btn-outline" id="stg-jira-disconnect">Disconnect</button>
+                </div>
+                <div class="stg-divider"></div>
+                <div class="stg-row">
+                  <div class="stg-row-desc multi">
+                    Report Mode now shows a <b>Create issue</b> button. Disconnecting
+                    removes the stored token from this device; to revoke it entirely,
+                    also delete it from your
+                    <button class="stg-inline-link" id="stg-jira-manage-link" type="button">Atlassian account ↗</button>.
+                  </div>
+                </div>
+              </div>
+
             </div>
           </div>
         </section>

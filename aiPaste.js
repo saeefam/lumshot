@@ -14,7 +14,10 @@
 // they were just in. So candidates come from enumerating open windows in
 // Z-ORDER (Windows Z-order encodes activation recency) and keeping only
 // whitelisted AI/code apps: candidates[0] is the most recently used AI tool.
-// Browsers and other general apps are never candidates.
+// Browsers and other general apps are never candidates. Since Z-order IS
+// interaction recency, candidates[0] is "the last AI app the user was in" —
+// final ranking policy (the foreground-at-capture guard) lives in main.js's
+// orderAiCandidates.
 //
 // Only win32 is implemented. Everything degrades safely: on other platforms —
 // or whenever the helper is missing/wedged — findTargets resolves [] and
@@ -126,10 +129,23 @@ function warmUp() { startHelper(); }
 // feature exists for AI chat and coding workflows, so browsers, terminals and
 // other general apps are never candidates. Keys are lowercased exe basenames.
 const AI_APPS = {
-  'cursor.exe':          'Cursor',
+  // AI chat apps
   'claude.exe':          'Claude',
   'chatgpt.exe':         'ChatGPT',
+  'chatgpt classic.exe': 'ChatGPT',  // Microsoft Store package ships this basename
   'codex.exe':           'Codex',
+  'kimi.exe':            'Kimi',
+  'grok.exe':            'Grok',
+  'perplexity.exe':      'Perplexity',
+  'deepseek.exe':        'DeepSeek',
+  'gemini.exe':          'Gemini',
+  'chatbox.exe':         'Chatbox',
+  'lm studio.exe':       'LM Studio',
+  'jan.exe':             'Jan',
+  'msty.exe':            'Msty',
+  'cherry studio.exe':   'Cherry Studio',
+  // AI code editors / IDEs
+  'cursor.exe':          'Cursor',
   'code.exe':            'VS Code',
   'code - insiders.exe': 'VS Code Insiders',
   'windsurf.exe':        'Windsurf',
@@ -137,6 +153,7 @@ const AI_APPS = {
   'antigravity ide.exe': 'Antigravity',
   'antigravity.exe':     'Antigravity',
   'trae.exe':            'Trae',
+  'kiro.exe':            'Kiro',
 };
 
 // "custom app" fallback label: "antigravity ide.exe" → "Antigravity Ide"
@@ -146,11 +163,18 @@ function titleCaseStem(base) {
 
 // Ranked candidate destinations for a capture. The helper reports every
 // top-level window in Z-order (most recently activated first); we keep the
-// most recent window per whitelisted app. hwnds stay strings — opaque tokens
-// that only travel back to the helper.
+// most recent window per whitelisted app — deduped by FRIENDLY NAME, so an
+// app that ships several exe variants ("chatgpt.exe" / "chatgpt classic.exe",
+// "antigravity.exe" / "antigravity ide.exe") appears once, as its most recent
+// window. hwnds stay strings — opaque tokens that only travel back to the
+// helper.
+// Resolves null when the helper itself is unavailable (spawn failed, wedged,
+// timed out) — distinct from [] (helper fine, no whitelisted app running) so
+// the caller can tell the user WHY auto-paste is degrading.
 async function findTargets(customApps, timeoutMs = 2000) {
   const res = await sendRequest('ENUM', '', timeoutMs);
-  if (!res || !res.ok || !res.payload) return [];
+  if (!res) return null;               // transport failure — helper unavailable
+  if (!res.ok || !res.payload) return [];
 
   const allowed = new Map(Object.entries(AI_APPS));
   for (const raw of Array.isArray(customApps) ? customApps : []) {
@@ -169,18 +193,42 @@ async function findTargets(customApps, timeoutMs = 2000) {
     const sep = m[3].indexOf('|');
     const exe = (sep >= 0 ? m[3].slice(0, sep) : m[3]).trim();
     const base = exe ? path.basename(exe).toLowerCase() : '';
-    if (!allowed.has(base)) continue; // not an AI/code app — never a target
-    if (seen.has(base)) continue;     // older window of the same app
-    seen.add(base);
+    const appName = allowed.get(base);
+    if (!appName) continue;           // not an AI/code app — never a target
+    if (seen.has(appName)) continue;  // older window (or sibling exe) of the same app
+    seen.add(appName);
     targets.push({
       hwnd:    m[1],
       pid:     Number(m[2]),
       exe,
       title:   (sep >= 0 ? m[3].slice(sep + 1) : '').trim(),
-      appName: allowed.get(base),
+      appName,
     });
   }
   return targets;
+}
+
+// The window the user is in RIGHT NOW → { hwnd, pid, exe, title }, or null
+// when the helper is unavailable or there is no usable foreground window.
+// This is the "which app was the user in at capture time" signal that ENUM
+// Z-order alone cannot provide (it can't distinguish "foreground at the
+// hotkey press" from "merely used recently"). Callers must grab it BEFORE any
+// LumShot window takes focus, and should ignore results whose pid is their
+// own process.
+async function getForeground(timeoutMs = 1500) {
+  const res = await sendRequest('TARGET', '', timeoutMs);
+  if (!res || !res.ok || !res.payload) return null;
+  // "<hwnd> <pid> <elevated> <exePath>|<title>" — exe paths cannot contain
+  // '|', so the FIRST '|' is the separator (the title may contain more).
+  const m = res.payload.match(/^(\d+)\s+(\d+)\s+[01]\s+(.*)$/);
+  if (!m) return null;
+  const sep = m[3].indexOf('|');
+  return {
+    hwnd:  m[1],
+    pid:   Number(m[2]),
+    exe:   (sep >= 0 ? m[3].slice(0, sep) : m[3]).trim(),
+    title: (sep >= 0 ? m[3].slice(sep + 1) : '').trim(),
+  };
 }
 
 // Restore/focus the target and simulate Ctrl+V. The helper verifies the window
@@ -207,6 +255,7 @@ module.exports = {
   isSupported,
   warmUp,
   findTargets,
+  getForeground,
   focusAndPaste,
   stop,
 };

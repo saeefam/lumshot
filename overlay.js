@@ -354,11 +354,13 @@ function drawSelection(rect, rgb, minimal) {
 
   if (minimal) return; // held capture feedback: border only (no handles / label)
 
-  // Small squares at each corner
+  // Small circles at each corner
   const hs = snap(7);
   [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].forEach(([cx, cy]) => {
     ctx.fillStyle = `rgb(${rgb})`;
-    ctx.fillRect(snap(cx - hs / 2), snap(cy - hs / 2), hs, hs);
+    ctx.beginPath();
+    ctx.arc(snap(cx), snap(cy), hs / 2, 0, Math.PI * 2);
+    ctx.fill();
   });
 
   // Dimensions label

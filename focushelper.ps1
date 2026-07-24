@@ -18,7 +18,10 @@
 #                        (exe paths cannot contain '|', so the FIRST '|' is the
 #                        separator even if the title itself contains one)
 #   PASTE <id> <hwnd>  → restore/focus <hwnd>, wait until it is actually
-#                        foreground (≤500ms), then SendInput Ctrl+V.
+#                        foreground (≤1200ms, retrying the unlock tricks every
+#                        150ms — Win11 24H2+ refuses cross-process
+#                        SetForegroundWindow more aggressively, so one attempt
+#                        is not enough), then SendInput Ctrl+V.
 #                        Reply "OK <id>" or "ERR <id> <reason>" where reason is
 #                        one of: target-gone | target-elevated | focus-timeout |
 #                        focus-lost | sendinput-failed (typed so the caller can
@@ -34,12 +37,15 @@
 #   letting the caller fall back to "Copied to clipboard, press Ctrl+V".
 # - AttachThreadInput: SetForegroundWindow is refused for background processes
 #   (the foreground lock). Attaching our input queue to both the current
-#   foreground thread and the target's thread is the classic unlock; if focus
-#   still hasn't landed after 200ms, an ALT tap (which makes us the last-input
-#   process) is tried once before giving up.
+#   foreground thread and the target's thread is the classic unlock (and lets
+#   us SetFocus the target directly); every 150ms without focus an ALT tap
+#   (which makes us the last-input process) precedes the next attempt.
 # - Foreground poll: never paste blind — if the target isn't verifiably
-#   foreground within 500ms, report focus-timeout instead of typing Ctrl+V into
-#   whatever window happens to have focus.
+#   foreground within the budget, report focus-timeout instead of typing Ctrl+V
+#   into whatever window happens to have focus. A transient flip during the
+#   post-focus settle re-enters the focus loop instead of giving up: the caller
+#   deliberately leaves its own (invisible) overlay foreground when it asks us
+#   to paste, so a late activation from the OS must be out-raced, not fatal.
 
 Add-Type @"
 using System;
@@ -60,6 +66,7 @@ public class LumFocus {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
@@ -201,6 +208,10 @@ public class LumFocus {
       aTgt = AttachThreadInput(our, targetThread, true);
     BringWindowToTop(hwnd);
     SetForegroundWindow(hwnd);
+    // While attached to the target's queue we may assign keyboard focus
+    // directly — activation alone doesn't always route it (fails harmlessly
+    // when the attach didn't take).
+    SetFocus(hwnd);
     if (aTgt) AttachThreadInput(our, targetThread, false);
     if (aFg) AttachThreadInput(our, fgThread, false);
   }
@@ -237,22 +248,34 @@ public class LumFocus {
     if (!selfElevated && ProcessElevation(pid) == 1) return "ERR target-elevated";
     if (IsIconic(hwnd)) { ShowWindow(hwnd, SW_RESTORE); Thread.Sleep(150); }
 
-    if (!IsForeground(hwnd, pid)) {
-      ForceForeground(hwnd, targetThread);
-      int waited = 0;
-      bool altTried = false;
-      while (!IsForeground(hwnd, pid)) {
-        if (waited >= 500) return "ERR focus-timeout";
-        if (waited >= 200 && !altTried) { altTried = true; AltTap(); ForceForeground(hwnd, targetThread); }
-        Thread.Sleep(25);
-        waited += 25;
+    // Focus loop with a total budget: force-foreground, poll, and re-run the
+    // unlock tricks (ALT tap + attach + SetForegroundWindow) every 150ms while
+    // focus hasn't landed. After focus lands, a 90ms settle lets the target
+    // finish activation (caret/input routing); if focus flips away during the
+    // settle (a late activation the OS queued for another window), the loop
+    // re-steals it instead of giving up — but NEVER pastes until the target is
+    // verifiably foreground after a full settle. The happy path is one
+    // iteration: ~0ms when already foreground-ish, ~115ms when stolen cleanly.
+    int total = 0;
+    bool everFocused = false;
+    while (true) {
+      if (!IsWindow(hwnd)) return "ERR target-gone";
+      if (!IsForeground(hwnd, pid)) {
+        ForceForeground(hwnd, targetThread);
+        int sinceAttempt = 0;
+        while (!IsForeground(hwnd, pid)) {
+          if (total >= 1200) return everFocused ? "ERR focus-lost" : "ERR focus-timeout";
+          if (sinceAttempt >= 150) { AltTap(); ForceForeground(hwnd, targetThread); sinceAttempt = 0; }
+          Thread.Sleep(25);
+          total += 25; sinceAttempt += 25;
+        }
       }
+      everFocused = true;
+      Thread.Sleep(90);
+      total += 90;
+      if (IsForeground(hwnd, pid)) break;   // settled — safe to type
+      if (total >= 1200) return "ERR focus-lost";
     }
-    // Let the target finish its activation (caret/input routing) before typing,
-    // then re-verify: if something else (e.g. the user clicking) took foreground
-    // during the settle, abort rather than paste into the wrong window.
-    Thread.Sleep(90);
-    if (!IsForeground(hwnd, pid)) return "ERR focus-lost";
     if (!SendCtrlV()) return "ERR sendinput-failed";
     return "OK";
   }

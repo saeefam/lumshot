@@ -96,6 +96,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   triggerCaptureOcr: () =>
     ipcRenderer.invoke('trigger-capture-ocr'),
 
+  // Editor → main: trigger a region capture that opens straight into Report Mode
+  triggerCaptureReport: () =>
+    ipcRenderer.invoke('trigger-capture-report'),
+
+  // Settings → main: change the global Report Capture hotkey (returns { ok, settings })
+  setReportHotkey: (accel) =>
+    ipcRenderer.invoke('settings:set-report-hotkey', accel),
+
+  // ── Jira integration (Report Mode) ──
+  // All Jira HTTP + credential handling lives in main (jira.js); these calls
+  // move only status objects and normalized results — never the token.
+  jiraGetStatus:     ()                       => ipcRenderer.invoke('jira:get-status'),
+  jiraConnect:       (args)                   => ipcRenderer.invoke('jira:connect', args),
+  jiraDisconnect:    ()                       => ipcRenderer.invoke('jira:disconnect'),
+  jiraGetProjects:   ()                       => ipcRenderer.invoke('jira:get-projects'),
+  jiraGetIssueTypes: (projectId)              => ipcRenderer.invoke('jira:get-issue-types', projectId),
+  jiraGetFieldMeta:  (projectId, issueTypeId) => ipcRenderer.invoke('jira:get-field-meta', projectId, issueTypeId),
+  jiraGetUsers:      (projectKey)             => ipcRenderer.invoke('jira:get-users', projectKey),
+  jiraCreateIssue:   (payload)                => ipcRenderer.invoke('jira:create-issue', payload),
+  jiraGetEnv:        ()                       => ipcRenderer.invoke('jira:get-env'),
+  jiraOpenTokenPage: ()                       => ipcRenderer.send('jira:open-token-page'),
+  jiraOpenIssue:     (url)                    => ipcRenderer.send('jira:open-issue', url),
+
   // Editor → main: open a native file picker and load the chosen image
   openImage: () =>
     ipcRenderer.invoke('file:open-image'),
@@ -168,6 +191,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Main → editor: Tools/Capture menu "Toggle OCR Mode"
   onMenuOcrToggle: (cb) =>
     ipcRenderer.on('trigger-ocr-toggle', () => cb()),
+
+  // Main → editor: an OCR-mode capture just started — pre-warm the OCR engine
+  // (worker + WASM + language model) while the user drags the region.
+  onOcrWarm: (cb) =>
+    ipcRenderer.on('ocr-warm', () => cb()),
 
   // Main → editor: Edit > Delete selected annotation
   onMenuDelete: (cb) =>

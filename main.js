@@ -120,8 +120,11 @@ let isQuitting        = false;   // true only during a real Quit (from tray / ap
 let activeShortcut    = null;    // the global accelerator currently registered
 let activeAiShortcut  = null;    // "Capture to AI" accelerator currently registered
 let aiHotkeyUnavailable = false; // AI hotkey failed to register (conflict) — surfaced in settings
+let activeReportShortcut = null; // "Report Capture" accelerator currently registered
 let aiCandidates      = [];      // ranked AI-app targets for the in-flight capture (badge + Tab cycling)
 let pendingAiTargets  = null;    // [{ appName, icon }] for the overlay reset payload (AI-hotkey entry)
+let pendingAiForeground = null;  // Promise<fg|null> — the app the user was in at capture entry,
+                                 // snapshotted BEFORE the overlay steals foreground (normal entries)
 const aiIconCache     = new Map(); // exe path → icon dataURL | null (getFileIcon is not free)
 let aiToastWindow     = null;    // short-lived "Sent to …" system toast window
 let updateReady       = false;   // an update has finished downloading and is ready to install
@@ -133,6 +136,7 @@ let pinDragTimer      = null;    // setInterval id while the pin is being dragge
 let editorHasImage    = false;   // true once a screenshot has been loaded into the editor doc
 let editorVisibleBeforeCapture = false; // editor visibility at the instant a capture began
 let pendingOcrCapture = false;   // next capture should open straight into the editor's OCR Mode
+let pendingReportCapture = false; // next capture should open straight into Report Mode (Jira report)
 let scrollWindow      = null;    // scroll-capture control window
 let scrollSession     = null;    // in-flight scroll capture state (see startScrollCapture)
 
@@ -167,16 +171,17 @@ function createEditorWindow() {
   editorReady = false;
   editorShown = false;
   editorWindow = new BrowserWindow({
-    width: 1140,        // 820 main preview + 320 controls sidebar
+    width: 1220,        // 904 main preview + 316 controls sidebar
     height: 720,
     // Narrowest width where the whole toolbar row still fits without clipping:
     // the fixed 316px right cluster (aligned to the sidebar, so it reaches the
     // window edge) sits flush against the Tool Properties panel with no gap:
-    //   15 pad + 127 left + 32 min palette margin + 440 palette + 12 + 156
-    //   tool-props = 782 (props right edge), + 316 right cluster = 1098.
+    //   15 pad + 127 left + 32 min palette margin + 428 palette + 12 + 156
+    //   tool-props = 770 (props right edge), + 316 right cluster = 1086.
+    // Palette = 11 tool buttons x 36px + 10 x 3px gap + 2px border = 428.
     // Below this the right cluster would overlap tool-props (which then clips).
-    // 1104 (not 1098) leaves a few px so sub-pixel rounding never clips Save.
-    minWidth: 1104,
+    // 1092 (not 1086) leaves a few px so sub-pixel rounding never clips Save.
+    minWidth: 1092,
     minHeight: 580,
     title: 'Lumshot',
     icon: path.join(__dirname, 'assets', 'icon.ico'),
@@ -271,7 +276,12 @@ function createEditorWindow() {
   // hardware. Forcing a full repaint on every show is cheap and fixes it
   // unconditionally rather than only for machines we can reproduce it on.
   editorWindow.on('show', () => {
-    if (editorWindow && !editorWindow.isDestroyed()) editorWindow.webContents.invalidate();
+    if (editorWindow && !editorWindow.isDestroyed()) {
+      editorWindow.webContents.invalidate();
+      // Drop the capture-session shield (see shieldEditorForCapture) so the
+      // editor stays screen-shareable/recordable during normal use.
+      try { editorWindow.setContentProtection(false); } catch (e) { /* ignore */ }
+    }
   });
 
   // Closing the window minimizes to tray instead of quitting.
@@ -305,10 +315,12 @@ function showEditor() {
 // Push an image into the editor document and remember that it now holds one.
 function loadIntoEditor(dataUrl) {
   if (editorWindow && !editorWindow.isDestroyed()) {
-    // `ocr` tells the editor to open this capture directly in OCR Mode. The flag
-    // is one-shot: consumed (and cleared) by whichever capture path lands here.
-    editorWindow.webContents.send('load-screenshot', { dataUrl, ocr: pendingOcrCapture });
+    // `ocr` / `report` tell the editor to open this capture directly in OCR /
+    // Report Mode. Both flags are one-shot: consumed (and cleared) by whichever
+    // capture path lands here.
+    editorWindow.webContents.send('load-screenshot', { dataUrl, ocr: pendingOcrCapture, report: pendingReportCapture });
     pendingOcrCapture = false;
+    pendingReportCapture = false;
     editorHasImage = true;
   }
 }
@@ -370,17 +382,19 @@ function updatePin(dataUrl) {
 // image, so a Pin would just be noise. (Read the flag before loadIntoEditor
 // consumes it.)
 function dispatchCapture(dataUrl, imgW, imgH) {
-  const isOcrCapture = pendingOcrCapture;
+  const isOcrCapture    = pendingOcrCapture;
+  const isReportCapture = pendingReportCapture;
   captureHistory.saveCapture(dataUrl, imgW, imgH);
-  // OCR captures always open the editor (that's where the extracted text lands)
-  // since there's no Pin to fall back on; image captures keep the old behaviour.
-  if (editorVisibleBeforeCapture || isOcrCapture) {
+  // OCR and Report captures always open the editor (that's where the extracted
+  // text / issue form lands) since there's no Pin to fall back on; image
+  // captures keep the old behaviour.
+  if (editorVisibleBeforeCapture || isOcrCapture || isReportCapture) {
     showEditor();
     loadIntoEditor(dataUrl);
   } else {
     editorHasImage = false; // editor's current doc no longer matches the latest capture
   }
-  if (!isOcrCapture) showPin(dataUrl, imgW, imgH);
+  if (!isOcrCapture && !isReportCapture) showPin(dataUrl, imgW, imgH);
 }
 
 // ─── Capture ───────────────────────────────────────────────────────────────
@@ -544,6 +558,21 @@ function grabFullScreenNative() {
   });
 }
 
+// Hide the editor for a capture AND exclude it from the grab pipeline outright.
+// hide() alone is asynchronous at the OS level: DWM can still be compositing the
+// window's fade-out when the grab runs (the fixed 150–180ms settle delays lose
+// that race under load), which left a semi-transparent ghost of the editor in
+// the shot. Content protection removes the window from screen captures no
+// matter how the timing falls — the same mechanism that already keeps the
+// overlay, pin, and scroll-bar windows out of every grab (those are protected
+// permanently; the editor only during a capture session, so it stays
+// screen-shareable in normal use — the shield is dropped on the next 'show').
+function shieldEditorForCapture() {
+  if (!editorWindow || editorWindow.isDestroyed()) return;
+  try { editorWindow.setContentProtection(true); } catch (e) { /* ignore */ }
+  editorWindow.hide();
+}
+
 // Highest-fidelity grab for single-shot captures (region, full screen). Tries the
 // native pixel-exact path first and only falls back to desktopCapturer if it ever
 // fails — so worst case is today's behaviour, never a broken capture.
@@ -564,10 +593,25 @@ async function startCapture(initialMode = 'region') {
   if (overlayVisible) return; // re-entry guard
   captureSession++;           // new session — invalidates any in-flight frame push
 
+  // Snapshot which app the user is IN before the overlay steals foreground —
+  // orderAiCandidates() ranks the AI destinations by it, and by the time
+  // resolveAiTargetsLate() runs, GetForegroundWindow is already the overlay.
+  // The short race gives a warm helper (~ms) time to read the foreground
+  // before the reveal below, without letting a cold/wedged helper delay the
+  // overlay; if the read loses the race, the late fg resolves to LumShot's
+  // own window and is ignored (self-pid guard), degrading to plain Z-order
+  // recency. The 'ai' entry path does its own snapshot (see startCaptureToAI).
+  pendingAiForeground = null;
+  if (initialMode !== 'ai'
+      && settings.getSettings().captureToAI.enabled && aiPaste.isSupported()) {
+    pendingAiForeground = aiPaste.getForeground(1500);
+    await Promise.race([pendingAiForeground, new Promise((r) => setTimeout(r, 50))]);
+  }
+
   // Remember whether the editor was on screen before we hide it for the grab —
   // this decides Scenario 1 (editor open) vs Scenario 2 (tray-only) below.
   editorVisibleBeforeCapture = !!(editorWindow && !editorWindow.isDestroyed() && editorWindow.isVisible());
-  if (editorWindow) editorWindow.hide();
+  shieldEditorForCapture();
 
   // Show the selection overlay immediately (no waiting on a screenshot). The mode
   // it should open in (region / scroll / ocr) is applied as part of the reveal so
@@ -577,10 +621,19 @@ async function startCapture(initialMode = 'region') {
   if (!overlayWindow || overlayWindow.isDestroyed()) createOverlayWindow();
   requestShowOverlay();
 
-  // Grab the real screen in the background. The 150ms delay lets the editor
-  // finish hiding so it isn't in the shot; the overlay is content-protected.
+  // OCR-mode capture: tell the (hidden) editor to pre-warm the OCR engine now,
+  // so the worker + language model load while the user is dragging the region
+  // and recognition starts the moment the capture lands.
+  if (initialMode === 'ocr' && editorWindow && !editorWindow.isDestroyed()) {
+    editorWindow.webContents.send('ocr-warm');
+  }
+
+  // Grab the real screen in the background. The settle delay lets the editor's
+  // hide fully commit AND outlasts capture-interception software (AV "screen
+  // protection" drivers) that can serve slightly stale frames from before the
+  // hide. It's free: the user is still dragging the region when it elapses.
   pendingCapture = (async () => {
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 300));
     try { return await grabFullScreenSharp(); }
     catch (err) { console.error('Screen capture error:', err); return null; }
   })();
@@ -594,6 +647,16 @@ function startCaptureScroll() { startCapture('scroll'); }
 // Opens the capture overlay pre-set to OCR mode (the user then drags the area to
 // extract text from), mirroring how Capture Scroll pre-selects scroll mode.
 function startCaptureOcr() { startCapture('ocr'); }
+
+// Report capture: a normal region capture whose result opens the editor
+// directly in Report Mode (Jira issue form). The overlay itself is untouched —
+// the flag rides alongside, like pendingOcrCapture. The editor pre-warms the
+// OCR engine now (Report Mode's summary/description come from a scan).
+function startCaptureReport() {
+  pendingReportCapture = true;
+  if (editorWindow && !editorWindow.isDestroyed()) editorWindow.webContents.send('ocr-warm');
+  startCapture('region');
+}
 
 // ─── Capture to AI ────────────────────────────────────────────────────────────
 // A dedicated capture workflow (overlay mode 'ai') that auto-pastes into the
@@ -610,28 +673,77 @@ async function startCaptureToAI() {
   if (overlayVisible) return; // same re-entry guard as startCapture()
   const ai = settings.getSettings().captureToAI;
   if (!ai.enabled || !aiPaste.isSupported()) return startCapture();
+  // The overlay hasn't revealed yet, so the foreground window IS the app the
+  // user pressed the hotkey in — the strongest destination signal there is.
+  const fgPromise = aiPaste.getForeground(1500);
   const candidates = await aiPaste.findTargets(ai.customApps, 1500);
-  if (!candidates.length) return startCapture(); // no AI app running → normal workflow
-  aiCandidates = candidates;
+  // Degrading to the normal workflow is fine, but never silently: the user
+  // pressed the AI hotkey and needs to know why no auto-paste will happen.
+  if (!Array.isArray(candidates)) {
+    showSystemToast('AI paste helper unavailable — normal capture instead');
+    return startCapture();
+  }
+  if (!candidates.length) {
+    showSystemToast('No AI app window found — normal capture instead');
+    return startCapture();
+  }
+  aiCandidates = orderAiCandidates(candidates, await fgPromise);
   // Resolved BEFORE the reveal so the AI overlay opens with its destination
   // badge ready on the first frame (atomic, like mode pre-selection).
-  pendingAiTargets = await aiTargetsPayload(candidates);
+  pendingAiTargets = await aiTargetsPayload(aiCandidates);
   await startCapture('ai');
+}
+
+// Rank candidate destinations — "the last AI app the user interacted with".
+// candidates arrive in Z-order, and Windows Z-order IS interaction recency:
+// clicking into Cursor's chat puts Cursor above Claude the moment it happens,
+// and it STAYS there while the user browses elsewhere — so candidates[0]
+// already names the destination, with no capture needed to "teach" it and no
+// state to persist. Earlier designs layered a remembered last-pasted-to app
+// and a chat-over-IDE preference on top; both only ever OVERRODE that live
+// recency signal (e.g. focusing an IDE's chat couldn't beat a remembered chat
+// app), so they're gone.
+// The fg snapshot (the app the user was in at capture entry, taken before any
+// LumShot window steals foreground) stays as a guard for Z-order anomalies —
+// e.g. a candidate app's always-on-top companion window outranking the app
+// the user is actually standing in. Ignored when it's LumShot itself (a late
+// snapshot that lost the race to the overlay) or not a candidate.
+// Tab cycling in the overlay indexes this same ordering.
+function orderAiCandidates(candidates, fg) {
+  let i = -1;
+  if (fg && fg.pid !== process.pid && fg.exe) {
+    const fgBase = path.basename(fg.exe).toLowerCase();
+    i = candidates.findIndex((c) =>
+      c.pid === fg.pid || path.basename(c.exe).toLowerCase() === fgBase);
+  }
+  if (i <= 0) return candidates; // Z-order recency is the answer
+  const picked = candidates.splice(i, 1)[0];
+  candidates.unshift(picked);
+  return candidates;
 }
 
 // The exe's real icon (as a dataURL) for the overlay's destination badge —
 // authentic for any app, including user-added customApps, with nothing to
-// bundle. null when the exe has no extractable icon; the badge then falls
-// back to the app's initial letter.
+// bundle. Only SUCCESSES are cached: extraction can fail transiently (exe
+// locked mid-update, cold shell icon cache), and caching that null used to
+// blank the app's logo for the rest of the session — retry next capture
+// instead. Exes that only carry small icon resources fall through the size
+// ladder. null when nothing is extractable; the badge then falls back to the
+// app's initial letter.
 async function iconForExe(exe) {
-  if (aiIconCache.has(exe)) return aiIconCache.get(exe);
-  let icon = null;
-  try {
-    const img = await app.getFileIcon(exe, { size: 'large' });
-    if (img && !img.isEmpty()) icon = img.toDataURL();
-  } catch (e) { /* no icon — badge falls back to the initial letter */ }
-  aiIconCache.set(exe, icon);
-  return icon;
+  const cached = aiIconCache.get(exe);
+  if (cached) return cached;
+  for (const size of ['large', 'normal', 'small']) {
+    try {
+      const img = await app.getFileIcon(exe, { size });
+      if (img && !img.isEmpty()) {
+        const icon = img.toDataURL();
+        aiIconCache.set(exe, icon);
+        return icon;
+      }
+    } catch (e) { /* try the next size down */ }
+  }
+  return null;
 }
 
 function aiTargetsPayload(candidates) {
@@ -649,10 +761,12 @@ function resolveAiTargetsLate() {
   const session = captureSession;
   const ai = settings.getSettings().captureToAI;
   if (!ai.enabled || !aiPaste.isSupported()) return;
+  const fgPromise = pendingAiForeground; // snapshotted at startCapture entry
   aiPaste.findTargets(ai.customApps, 1500).then(async (candidates) => {
     if (session !== captureSession || !overlayVisible) return;
-    aiCandidates = candidates;
-    const targets = await aiTargetsPayload(candidates);
+    if (!Array.isArray(candidates)) return; // helper down — AI tab stays unavailable
+    aiCandidates = orderAiCandidates(candidates, await fgPromise);
+    const targets = await aiTargetsPayload(aiCandidates);
     if (session !== captureSession || !overlayVisible) return;
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       overlayWindow.webContents.send('overlay-ai-targets', targets);
@@ -663,29 +777,55 @@ function resolveAiTargetsLate() {
 // Finish a Capture-to-AI region selection: clipboard → focus-restore → paste.
 // Deliberately no editor and no pin — the point is that the user never leaves
 // the target app; the image still lands in history.
+//
+// Focus-handoff model: the paste is dispatched while the (parked, invisible)
+// overlay STILL holds foreground. LumShot being the foreground process is what
+// entitles its child helper to SetForegroundWindow — one clean handoff:
+// overlay → target. The old code blurred the overlay first, but on Windows
+// Electron's blur() actively hands foreground to the next window in Z-order —
+// the very app the user captured FROM — and the helper then raced that
+// in-flight activation for the foreground; whichever landed last won. That
+// race was the intermittent "auto-paste never happened" failure.
 async function finishAiCapture(crop, target) {
-  captureHistory.saveCapture(crop.image.toDataURL(), crop.w, crop.h);
   editorHasImage = false; // editor's current doc no longer matches the latest capture
 
   clipboard.writeImage(crop.image);
-  // Verify the clipboard really holds the image BEFORE touching foreground
-  // state — the "press Ctrl+V yourself" fallback only works if it does.
+  // Verify the clipboard really holds the image BEFORE pasting — both the
+  // paste and the "press Ctrl+V yourself" fallback only work if it does.
   const clipOk = !clipboard.readImage().isEmpty();
-  let paste = { ok: false, reason: 'clipboard-empty' };
+  let pastePromise = null;
   if (clipOk) {
-    // The parked overlay is still technically "shown" and may retain foreground
-    // — make sure it has yielded before the helper asserts the target.
-    if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.blur();
-    paste = await aiPaste.focusAndPaste(target.hwnd);
+    pastePromise = aiPaste.focusAndPaste(target.hwnd);
+    // The helper command is written from a queued microtask/IO callback — yield
+    // once so it's actually on the wire before the (main-thread, 100ms+ on big
+    // captures) history encode below. The focus+paste then runs out-of-process,
+    // overlapped with the encode, instead of being delayed by it.
+    await new Promise((r) => setImmediate(r));
   }
+  captureHistory.saveCapture(crop.image.toDataURL(), crop.w, crop.h);
+
+  const paste = pastePromise ? await pastePromise : { ok: false, reason: 'clipboard-empty' };
   if (paste.ok) {
     showSystemToast(`Sent to ${target.appName}`);
   } else {
     console.error('Capture to AI: paste failed:', paste.reason);
-    showSystemToast(clipOk
-      ? `Copied to clipboard. Press Ctrl+V in ${target.appName}.`
-      : 'Capture failed — clipboard unavailable');
+    // The parked overlay may still hold foreground after a failed handoff —
+    // release it so the user's own Ctrl+V goes where they click next, not to
+    // an invisible window.
+    if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.blur();
+    showSystemToast(aiPasteFailureMessage(target.appName, paste.reason, clipOk));
   }
+}
+
+// One-line toast for a failed auto-paste, keyed by the helper's typed reason —
+// the user should know both WHAT to do (paste manually) and WHY it degraded.
+function aiPasteFailureMessage(appName, reason, clipOk) {
+  if (!clipOk) return 'Capture failed — clipboard unavailable';
+  if (reason === 'target-gone')
+    return `${appName} window was closed — image copied, press Ctrl+V where you need it`;
+  if (reason === 'target-elevated')
+    return `${appName} runs as administrator — image copied, press Ctrl+V there`;
+  return `Couldn't focus ${appName} — image copied, press Ctrl+V there`;
 }
 
 // ─── System toast ─────────────────────────────────────────────────────────────
@@ -727,7 +867,7 @@ async function captureFullScreen(preserveFlag = false) {
   if (!preserveFlag) {
     editorVisibleBeforeCapture = !!(editorWindow && !editorWindow.isDestroyed() && editorWindow.isVisible());
   }
-  if (editorWindow) editorWindow.hide();
+  shieldEditorForCapture();
   await new Promise((r) => setTimeout(r, 180));
 
   try {
@@ -994,6 +1134,7 @@ ipcMain.on('cancel-selection', () => {
   hideOverlay();
   pendingCapture = null;
   pendingOcrCapture = false;
+  pendingReportCapture = false;
   aiCandidates = [];
   pendingAiTargets = null;
   if (editorVisibleBeforeCapture) showEditor();
@@ -1028,6 +1169,7 @@ ipcMain.on('overlay-request-frame', () => {
 
 ipcMain.handle('trigger-capture', async () => { await startCapture(); });
 ipcMain.handle('trigger-capture-ocr', async () => { await startCaptureOcr(); });
+ipcMain.handle('trigger-capture-report', async () => { startCaptureReport(); });
 ipcMain.handle('file:open-image', () => openImageFromFile());
 
 // ─── Export IPC ──────────────────────────────────────────────────────────────
@@ -1330,6 +1472,35 @@ function broadcastLicense() {
 
 ipcMain.on('license:open-buy', () => shell.openExternal(POLAR_CHECKOUT_URL));
 
+// ─── Jira integration IPC ────────────────────────────────────────────────────
+// The module is require()d lazily on the first jira:* call, so nothing Jira-
+// related loads on the startup path. All Jira HTTP happens in jira.js (main
+// process); the renderer never sees the token — only status objects and
+// normalized results.
+let jiraModule = null;
+const jira = () => (jiraModule || (jiraModule = require('./jira')));
+
+ipcMain.handle('jira:get-status',       () => jira().getStatus());
+ipcMain.handle('jira:connect',          (_e, args)      => jira().connect(args || {}));
+ipcMain.handle('jira:disconnect',       () => jira().disconnect());
+ipcMain.handle('jira:get-projects',     () => jira().getProjects());
+ipcMain.handle('jira:get-issue-types',  (_e, projectId) => jira().getIssueTypes(projectId));
+ipcMain.handle('jira:get-field-meta',   (_e, projectId, issueTypeId) => jira().getFieldMeta(projectId, issueTypeId));
+ipcMain.handle('jira:get-users',        (_e, projectKey) => jira().getAssignableUsers(projectKey));
+ipcMain.handle('jira:create-issue',     (_e, payload)   => jira().createIssue(payload || {}));
+ipcMain.on('jira:open-token-page',      () => jira().openTokenPage());
+ipcMain.on('jira:open-issue',           (_e, url)       => jira().openIssueUrl(url));
+
+// Environment facts for the report's optional "Environment" block. Local-only
+// (no network, no Jira module needed).
+ipcMain.handle('jira:get-env', () => {
+  const os = require('os');
+  let osName;
+  try { osName = `${os.version()} (${os.release()})`; }   // "Windows 11 Home (10.0.26200)"
+  catch { osName = `${os.type()} ${os.release()}`; }
+  return { appVersion: app.getVersion(), os: osName };
+});
+
 // ─── Settings IPC ────────────────────────────────────────────────────────────
 function broadcastSettings(s) {
   if (editorWindow && !editorWindow.isDestroyed()) {
@@ -1345,7 +1516,13 @@ ipcMain.handle('settings:set', (event, key, value) => {
   // editor open — see LAUNCHED_SILENTLY.
   if (key === 'launchAtStartup') app.setLoginItemSettings({ openAtLogin: !!value, args: ['--hidden'] });
   // Enabled toggle (or a whole-object write) may change hotkey registration.
-  if (key === 'captureToAI') registerAiHotkey();
+  // Warm the focus helper too: enabling mid-session must not leave the first
+  // hotkey press waiting on (or timing out against) the Add-Type compile.
+  if (key === 'captureToAI') {
+    registerAiHotkey();
+    registerReportHotkey(); // AI enable/disable may free or take the report key
+    if (s.captureToAI.enabled && aiPaste.isSupported()) aiPaste.warmUp();
+  }
   if (key === 'theme') {
     // Drive native chrome appearance and push the resolved theme to every
     // window so the switch is instant. broadcastTheme() resolves 'system'
@@ -1379,9 +1556,10 @@ ipcMain.handle('settings:set-hotkey', (event, accel) => {
   // would silently overwrite the user's choice (e.g. turn a requested Ctrl+Shift+S
   // into whatever registered when it was momentarily unavailable).
   if (active) settings.setSetting('hotkey', accel);
-  // The main hotkey may have moved onto (or off) the AI hotkey's key — re-assert
-  // the AI registration so the conflict state stays truthful.
+  // The main hotkey may have moved onto (or off) the AI/Report hotkeys' keys —
+  // re-assert those registrations so the conflict state stays truthful.
   registerAiHotkey();
+  registerReportHotkey();
   const s = settings.getSettings();
   broadcastSettings(s);
   return { ok: active === accel, active, display: displayAccel(active), settings: s };
@@ -1393,9 +1571,19 @@ ipcMain.handle('settings:set-ai-hotkey', (event, accel) => {
   const cur = settings.getSettings().captureToAI;
   settings.setSetting('captureToAI', { ...cur, hotkey: accel });
   registerAiHotkey();
+  registerReportHotkey(); // the AI key may have moved onto/off the report key
   const s = settings.getSettings();
   broadcastSettings(s);
   return { ok: !!activeAiShortcut, unavailable: aiHotkeyUnavailable, display: displayAccel(accel), settings: s };
+});
+
+// Report Capture hotkey — same shape as the AI hotkey handler above.
+ipcMain.handle('settings:set-report-hotkey', (event, accel) => {
+  settings.setSetting('reportHotkey', accel);
+  registerReportHotkey();
+  const s = settings.getSettings();
+  broadcastSettings(s);
+  return { ok: !!activeReportShortcut, display: displayAccel(accel), settings: s };
 });
 
 // Settings UI: current AI-hotkey registration state (e.g. a conflict at startup).
@@ -1504,6 +1692,26 @@ function registerAiHotkey() {
     aiHotkeyUnavailable = true;
     console.error('Capture to AI hotkey unavailable:', ai.hotkey);
   }
+}
+
+// "Report Capture" hotkey (default Ctrl+Shift+R): region capture that opens the
+// editor straight in Report Mode (Jira issue form). Same no-fallback policy as
+// the AI hotkey — on conflict the feature stays dormant rather than landing on
+// a key the user never chose. Configurable from the Keyboard Shortcuts panel.
+function registerReportHotkey() {
+  if (activeReportShortcut) {
+    try { globalShortcut.unregister(activeReportShortcut); } catch (e) { /* ignore */ }
+    activeReportShortcut = null;
+  }
+  // Default is Ctrl+Shift+I ("Issue") — Ctrl+Shift+R is reserved for the
+  // upcoming Screen Recording feature.
+  const preferred = settings.getSettings().reportHotkey || 'CommandOrControl+Shift+I';
+  // Never fight our own capture / AI shortcuts for the key.
+  if (preferred !== activeShortcut && preferred !== activeAiShortcut) {
+    try { if (globalShortcut.register(preferred, startCaptureReport)) activeReportShortcut = preferred; }
+    catch (e) { /* invalid accelerator — stays unregistered */ }
+  }
+  if (!activeReportShortcut) console.error('Report Capture hotkey unavailable:', preferred);
 }
 
 // ─── Application menu ─────────────────────────────────────────────────────────
@@ -1618,6 +1826,7 @@ function buildAppMenu() {
         { id: 'cap.ai',         label: 'Capture to AI',                                               click: () => startCaptureToAI() },
         { type: 'separator' },
         { id: 'cap.ocr',        label: 'Capture in OCR Mode',                                         click: () => startCaptureOcr() },
+        { id: 'cap.report',     label: 'Capture for Report',                                          click: () => startCaptureReport() },
         { type: 'separator' },
         { id: 'cap.history',    label: 'Capture History…',       accelerator: 'CmdOrCtrl+H',         click: () => send('trigger-history') },
       ],
@@ -1644,7 +1853,7 @@ function buildAppMenu() {
         { id: 'tool.counter',   label: 'Step Counter',   accelerator: 'N', registerAccelerator: false, click: () => send('trigger-tool', 'counter') },
         { type: 'separator' },
         // Single-key/modifier shortcut handled in the renderer; accelerator is display-only.
-        { id: 'tool.ocr',       label: 'Toggle OCR Mode', accelerator: 'CmdOrCtrl+Shift+O', registerAccelerator: false, click: () => send('trigger-ocr-toggle') },
+        { id: 'tool.ocr',       label: 'Toggle OCR Mode', accelerator: 'O', registerAccelerator: false, click: () => send('trigger-ocr-toggle') },
       ],
     },
     // ── View ──────────────────────────────────────────────────────────────────
@@ -2495,11 +2704,21 @@ function updateTrayMenu() {
   if (!tray) return;
   const licensed = BETA_FREE_MODE || license.isLicensed();
 
+  // Every capture mode the overlay offers, grouped: the everyday region capture
+  // first, then the smart destinations (AI / Jira / OCR), then the alternate
+  // grab shapes (window / full screen / scroll).
   const items = [
     { label: 'Open Lumshot', click: () => showEditor() },
     { type: 'separator' },
-    { label: 'Capture Screenshot', click: () => startCapture() },
+    { label: 'Capture Region', click: () => startCapture() },
+    { type: 'separator' },
+    { label: 'AI Snapshot', click: () => startCaptureToAI() },
+    { label: 'Create Jira Issue', click: () => startCaptureReport() },
+    { label: 'OCR', click: () => startCaptureOcr() },
+    { type: 'separator' },
+    { label: 'Capture Window', click: () => captureWindow() },
     { label: 'Capture Full Screen', click: () => captureFullScreen() },
+    { label: 'Scroll Capture', click: () => startCaptureScroll() },
     { type: 'separator' },
     { label: 'Settings…', click: () => openSettings('general') },
     { type: 'separator' },
@@ -2629,6 +2848,7 @@ app.whenReady().then(() => {
   app.setLoginItemSettings({ openAtLogin: s.launchAtStartup, args: ['--hidden'] });
   registerHotkey(s.hotkey);
   registerAiHotkey();
+  registerReportHotkey();
   // Restore native chrome appearance from stored preference
   nativeTheme.themeSource = s.theme || 'system';
 
